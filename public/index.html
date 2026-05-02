@@ -1,735 +1,294 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Snapdeal P&L Analyzer — Flawsome</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
-<style>
-:root{
-  --ink:#0D0D0D;--paper:#F7F4EF;--cream:#EDE8E0;--line:#D5CFC5;
-  --green:#1A6B47;--green-light:#E8F3EC;--green-mid:#2D8A5E;
-  --red:#B5200D;--red-light:#FCEAE8;
-  --amber:#9B6800;--amber-light:#FDF3DC;
-  --blue:#0A3D8F;--blue-light:#E8EFFE;
-  --purple:#5C1A8C;--purple-light:#F0E8FA;
-  --mono:'DM Mono',monospace;
-  --sans:'DM Sans',sans-serif;
-  --display:'Syne',sans-serif;
-  --radius:3px;--radius-lg:8px;
-  --shadow:0 1px 3px rgba(0,0,0,.08),0 4px 16px rgba(0,0,0,.04);
-  --shadow-lg:0 4px 24px rgba(0,0,0,.10);
-}
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.6;min-height:100vh}
+const express = require('express');
+const multer  = require('multer');
+const XLSX    = require('xlsx');
+const cors    = require('cors');
+const path    = require('path');
 
-/* ── NAV ── */
-nav{background:var(--ink);padding:0 2rem;display:flex;align-items:center;justify-content:space-between;height:52px;position:sticky;top:0;z-index:100}
-.nav-brand{font-family:var(--display);font-weight:800;font-size:15px;color:#fff;letter-spacing:-.02em}
-.nav-brand span{color:#4ADE80}
-.nav-tag{font-family:var(--mono);font-size:11px;color:#888;letter-spacing:.04em}
+const app    = express();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-/* ── HERO ── */
-.hero{padding:3rem 2rem 2rem;max-width:960px;margin:0 auto}
-.hero-eyebrow{font-family:var(--mono);font-size:11px;color:var(--green-mid);letter-spacing:.12em;text-transform:uppercase;margin-bottom:.5rem}
-.hero-title{font-family:var(--display);font-size:clamp(28px,5vw,44px);font-weight:800;line-height:1.1;letter-spacing:-.03em;margin-bottom:.75rem}
-.hero-title em{font-style:normal;color:var(--green)}
-.hero-sub{font-size:14px;color:#666;max-width:560px;line-height:1.7}
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-/* ── UPLOAD STAGE ── */
-.stage{max-width:960px;margin:0 auto 4rem;padding:0 2rem}
-
-/* step pills */
-.steps{display:flex;gap:.5rem;margin-bottom:2rem;flex-wrap:wrap}
-.step-pill{display:flex;align-items:center;gap:.5rem;padding:.35rem .85rem;border:1px solid var(--line);border-radius:20px;font-size:12px;color:#888;background:white;transition:all .2s}
-.step-pill.active{border-color:var(--green);color:var(--green);background:var(--green-light);font-weight:500}
-.step-pill.done{border-color:#ccc;color:#aaa;background:var(--cream)}
-.step-pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-
-/* card */
-.card{background:white;border:1px solid var(--line);border-radius:var(--radius-lg);padding:1.5rem;margin-bottom:1rem;box-shadow:var(--shadow)}
-.card-title{font-family:var(--display);font-weight:700;font-size:13px;letter-spacing:.02em;text-transform:uppercase;color:#555;margin-bottom:1.25rem;display:flex;align-items:center;gap:.5rem}
-.card-title::before{content:'';display:block;width:3px;height:14px;background:var(--green);border-radius:2px}
-
-/* upload zones */
-.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-@media(max-width:600px){.upload-grid{grid-template-columns:1fr}}
-.drop-zone{border:1.5px dashed var(--line);border-radius:var(--radius-lg);padding:1.5rem 1rem;text-align:center;cursor:pointer;transition:all .2s;background:var(--cream);position:relative}
-.drop-zone:hover{border-color:var(--green);background:var(--green-light)}
-.drop-zone.has-file{border-color:var(--green);border-style:solid;background:var(--green-light)}
-.drop-zone.optional-empty{opacity:.7}
-.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.dz-icon{font-size:28px;margin-bottom:.5rem;display:block}
-.dz-label{font-family:var(--display);font-weight:700;font-size:13px;margin-bottom:.25rem}
-.dz-sub{font-size:11px;color:#888;line-height:1.5}
-.dz-filename{font-family:var(--mono);font-size:11px;color:var(--green);margin-top:.5rem;font-weight:500}
-.dz-badge{display:inline-block;padding:.15rem .5rem;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:.06em;margin-bottom:.35rem}
-.badge-required{background:#FEE;color:var(--red)}
-.badge-optional{background:#EEE;color:#888}
-
-/* cost inputs */
-.cost-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.75rem;margin-bottom:1rem}
-.cost-field{display:flex;flex-direction:column;gap:.3rem}
-.cost-field label{font-size:11px;color:#777;letter-spacing:.04em;text-transform:uppercase;font-weight:500}
-.cost-field .input-wrap{display:flex;align-items:center;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:white}
-.cost-field .prefix{padding:.45rem .65rem;background:var(--blue-light);font-family:var(--mono);font-size:12px;color:var(--blue);border-right:1px solid var(--line);font-weight:500}
-.cost-field input{flex:1;border:0;padding:.45rem .65rem;font-family:var(--mono);font-size:13px;color:var(--blue);font-weight:600;background:transparent;width:0}
-.cost-field input:focus{outline:none;background:var(--blue-light)}
-
-/* sku config table */
-.sku-cfg-wrap{overflow-x:auto}
-table.sku-cfg{width:100%;border-collapse:collapse;font-size:13px}
-table.sku-cfg th{text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#999;padding:.6rem .75rem;border-bottom:1px solid var(--line)}
-table.sku-cfg td{padding:.55rem .75rem;border-bottom:1px solid #F0EDE8;vertical-align:middle}
-table.sku-cfg tr:last-child td{border-bottom:none}
-table.sku-cfg select,table.sku-cfg input[type=number]{border:1px solid var(--line);border-radius:var(--radius);padding:.3rem .5rem;font-size:12px;font-family:var(--mono);background:white;color:var(--ink)}
-table.sku-cfg .sku-code{font-family:var(--mono);font-size:12px;font-weight:500;color:var(--ink)}
-table.sku-cfg .cogs-preview{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--green)}
-table.sku-cfg .formula-note{font-size:11px;color:#aaa;font-family:var(--mono)}
-
-/* build button */
-.build-btn{width:100%;padding:.85rem;background:var(--ink);color:white;border:0;border-radius:var(--radius);font-family:var(--display);font-weight:700;font-size:14px;letter-spacing:.02em;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:.6rem;margin-top:1rem}
-.build-btn:hover{background:#1a1a1a;transform:translateY(-1px);box-shadow:0 4px 16px rgba(0,0,0,.15)}
-.build-btn:active{transform:translateY(0)}
-.build-btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
-.build-btn .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:white;border-radius:50%;animation:spin .7s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.error-msg{background:var(--red-light);color:var(--red);padding:.75rem 1rem;border-radius:var(--radius);font-size:13px;margin-top:.75rem;border-left:3px solid var(--red)}
-
-/* ── DASHBOARD ── */
-#dashboard{display:none;max-width:960px;margin:0 auto 4rem;padding:0 2rem}
-.dash-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.5rem;gap:1rem;flex-wrap:wrap}
-.dash-title{font-family:var(--display);font-size:22px;font-weight:800;letter-spacing:-.02em}
-.dash-meta{font-size:12px;color:#888;font-family:var(--mono);margin-top:.2rem}
-.reset-btn{padding:.5rem 1rem;border:1px solid var(--line);border-radius:var(--radius);background:white;font-family:var(--display);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
-.reset-btn:hover{background:var(--cream)}
-
-/* tabs */
-.tabs{display:flex;gap:0;border-bottom:1.5px solid var(--line);margin-bottom:1.5rem;overflow-x:auto}
-.tab{padding:.65rem 1.1rem;font-family:var(--display);font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;color:#888;margin-bottom:-1.5px;white-space:nowrap;transition:all .15s}
-.tab:hover{color:var(--ink)}
-.tab.active{color:var(--ink);border-bottom-color:var(--ink)}
-.panel{display:none}.panel.active{display:block}
-
-/* kpi strip */
-.kpi-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.65rem;margin-bottom:1.5rem}
-.kpi{background:white;border:1px solid var(--line);border-radius:var(--radius-lg);padding:.85rem 1rem}
-.kpi-label{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:#888;margin-bottom:.3rem}
-.kpi-value{font-family:var(--display);font-size:20px;font-weight:800;letter-spacing:-.02em}
-.kpi-value.pos{color:var(--green)}
-.kpi-value.neg{color:var(--red)}
-.kpi-value.warn{color:var(--amber)}
-
-/* waterfall */
-.waterfall{background:white;border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden;margin-bottom:1.5rem}
-.wf-row{display:flex;align-items:center;justify-content:space-between;padding:.65rem 1.1rem;border-bottom:1px solid #F5F2EE;font-size:13px;gap:1rem}
-.wf-row:last-child{border-bottom:none}
-.wf-row.total{background:var(--cream);font-family:var(--display);font-weight:700}
-.wf-row.section-total{background:#F0EDE8}
-.wf-label{display:flex;align-items:center;gap:.5rem;color:#444}
-.wf-label.indented{padding-left:1.2rem;color:#888;font-size:12px}
-.wf-val{font-family:var(--mono);font-size:13px;font-weight:500;white-space:nowrap}
-.wf-val.pos{color:var(--green)}
-.wf-val.neg{color:var(--red)}
-.wf-bar-wrap{width:160px;display:flex;align-items:center;gap:.4rem;flex-shrink:0}
-.wf-bar-bg{flex:1;height:5px;background:#EEE;border-radius:3px;overflow:hidden}
-.wf-bar-fill{height:100%;border-radius:3px;transition:width .4s ease}
-
-/* explain toggle */
-.explain-toggle{width:16px;height:16px;border-radius:50%;border:1px solid var(--line);background:white;font-size:10px;font-style:italic;font-family:serif;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:#aaa;flex-shrink:0}
-.explain-toggle:hover{border-color:var(--green);color:var(--green)}
-.explain-box{background:var(--green-light);border-left:3px solid var(--green);padding:.75rem 1rem;font-size:12px;color:#2D5A40;line-height:1.7;display:none}
-.explain-box.open{display:block}
-.explain-src{font-family:var(--mono);font-size:10px;color:#888;margin-top:.3rem}
-
-/* sku cards */
-.sku-grid{display:flex;flex-direction:column;gap:1rem}
-.sku-card{background:white;border:1px solid var(--line);border-radius:var(--radius-lg);overflow:hidden}
-.sku-card-header{padding:1rem 1.25rem;display:flex;align-items:flex-start;justify-content:space-between;background:var(--cream);border-bottom:1px solid var(--line)}
-.sku-name{font-family:var(--mono);font-size:14px;font-weight:500}
-.sku-product{font-size:12px;color:#888;margin-top:2px}
-.verdict-badge{padding:.25rem .75rem;border-radius:12px;font-family:var(--display);font-size:11px;font-weight:700;letter-spacing:.04em;white-space:nowrap}
-.v-kill{background:var(--red-light);color:var(--red)}
-.v-review{background:var(--amber-light);color:var(--amber)}
-.v-watch{background:var(--amber-light);color:var(--amber)}
-.v-keep{background:var(--green-light);color:var(--green)}
-.sku-body{display:grid;grid-template-columns:1fr 1fr;gap:0}
-@media(max-width:640px){.sku-body{grid-template-columns:1fr}}
-.sku-col{padding:1rem 1.25rem}
-.sku-col:first-child{border-right:1px solid var(--line)}
-.sku-section-title{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#aaa;margin-bottom:.65rem;margin-top:.75rem}
-.sku-section-title:first-child{margin-top:0}
-.pl-row{display:flex;align-items:center;justify-content:space-between;padding:.4rem 0;border-bottom:1px solid #F5F2EE;gap:.5rem;cursor:pointer}
-.pl-row:last-child{border-bottom:none}
-.pl-row:hover .pl-label{color:var(--ink)}
-.pl-row:hover .explain-toggle{border-color:var(--green);color:var(--green)}
-.pl-label{font-size:12px;color:#666;display:flex;align-items:center;gap:.4rem;flex:1}
-.pl-label.bold{font-weight:600;color:var(--ink);font-size:13px}
-.pl-value{font-family:var(--mono);font-size:12px;font-weight:500;white-space:nowrap}
-.pl-value.pos{color:var(--green)}
-.pl-value.neg{color:var(--red)}
-.pl-value.warn{color:var(--amber)}
-.pl-value.bold{font-size:13px;font-weight:700}
-.pl-explain{font-size:11px;color:#777;line-height:1.6;padding:.5rem .75rem;background:var(--green-light);border-left:2px solid var(--green);margin:.25rem 0;display:none;border-radius:0 var(--radius) var(--radius) 0}
-.pl-explain.open{display:block}
-.pl-explain .src{font-family:var(--mono);font-size:10px;color:#aaa;margin-top:.2rem}
-
-/* summary box in sku */
-.summary-box{background:var(--cream);border-radius:var(--radius);padding:.85rem 1rem;margin-top:.75rem}
-.return-loss-box{background:var(--red-light);border-radius:var(--radius);padding:.85rem 1rem;margin-top:.75rem}
-
-/* charges tab */
-.charge-bar-row{margin-bottom:1.1rem}
-.charge-bar-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.35rem;font-size:13px;cursor:pointer}
-.charge-bar-header:hover .explain-toggle{border-color:var(--green);color:var(--green)}
-.charge-bar-name{display:flex;align-items:center;gap:.4rem;color:#444}
-.charge-bar-amount{font-family:var(--mono);font-size:12px;color:#666}
-.charge-bar-amount strong{color:var(--red)}
-.charge-bar-track{height:7px;background:#F0EDE8;border-radius:4px;overflow:hidden}
-.charge-bar-fill{height:100%;border-radius:4px;background:var(--red);transition:width .5s ease}
-.charge-bar-fill.cogs{background:var(--blue)}
-
-/* per-order box */
-.per-order-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1.5rem}
-@media(max-width:600px){.per-order-grid{grid-template-columns:1fr}}
-.po-box{background:white;border:1px solid var(--line);border-radius:var(--radius-lg);padding:1rem 1.1rem}
-.po-box.delivered-box{border-top:3px solid var(--green)}
-.po-box.returned-box{border-top:3px solid var(--red)}
-.po-title{font-family:var(--display);font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;margin-bottom:.75rem;display:flex;align-items:center;gap:.4rem}
-.po-title.green{color:var(--green)}
-.po-title.red{color:var(--red)}
-
-/* insights */
-.insight-card{border-left:3px solid;padding:.85rem 1rem;border-radius:0 var(--radius-lg) var(--radius-lg) 0;margin-bottom:.75rem;font-size:13px;line-height:1.7}
-.insight-card.kill{border-color:var(--red);background:var(--red-light)}
-.insight-card.warn{border-color:var(--amber);background:var(--amber-light)}
-.insight-card.good{border-color:var(--green);background:var(--green-light)}
-.insight-title{font-family:var(--display);font-weight:700;font-size:13px;margin-bottom:.2rem}
-.insight-title.kill{color:var(--red)}
-.insight-title.warn{color:var(--amber)}
-.insight-title.good{color:var(--green)}
-.insight-body{color:#555}
-
-/* section dividers */
-.section-label{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#aaa;margin-bottom:.75rem;margin-top:1.5rem;padding-bottom:.4rem;border-bottom:1px solid var(--line)}
-.section-label:first-child{margin-top:0}
-
-/* skeleton loader */
-.skeleton{background:linear-gradient(90deg,#F5F2EE 25%,#EDE8E0 50%,#F5F2EE 75%);background-size:200% 100%;animation:shimmer 1.2s infinite;border-radius:var(--radius);height:20px;margin-bottom:.5rem}
-@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
-
-/* utility */
-.pos{color:var(--green)}.neg{color:var(--red)}.warn{color:var(--amber)}
-.mono{font-family:var(--mono)}
-.bold{font-weight:600}
-.hint{font-size:11px;color:#aaa;font-style:italic;margin-bottom:.75rem}
-</style>
-</head>
-<body>
-
-<nav>
-  <div class="nav-brand">FLAWSOME <span>P&L</span></div>
-  <div class="nav-tag">Snapdeal Analyzer v2.0</div>
-</nav>
-
-<div class="hero">
-  <div class="hero-eyebrow">Marketplace intelligence</div>
-  <h1 class="hero-title">Know exactly where<br>your money <em>goes</em></h1>
-  <p class="hero-sub">Upload your Snapdeal P&L sheet and order report. Get SKU-level profitability, charge breakdowns, and actionable signals — in seconds.</p>
-</div>
-
-<div class="stage" id="uploadStage">
-
-  <!-- progress pills -->
-  <div class="steps">
-    <div class="step-pill active" id="pill1"><div class="dot"></div>Upload files</div>
-    <div class="step-pill" id="pill2"><div class="dot"></div>Set costs</div>
-    <div class="step-pill" id="pill3"><div class="dot"></div>Configure SKUs</div>
-    <div class="step-pill" id="pill4"><div class="dot"></div>View P&L</div>
-  </div>
-
-  <!-- files -->
-  <div class="card">
-    <div class="card-title">Step 1 — Upload your files</div>
-    <div class="upload-grid">
-      <div class="drop-zone" id="zone1" onclick="document.getElementById('fi_pl').click()">
-        <input type="file" id="fi_pl" accept=".xlsx,.xls" onchange="onFile(1,event)">
-        <span class="dz-icon">📋</span>
-        <span class="dz-badge badge-optional">Optional</span>
-        <div class="dz-label">P&L Sheet</div>
-        <div class="dz-sub">Monthly payment statement<br>Needed for ad spend & charge detail</div>
-        <div class="dz-filename" id="fn1">No file chosen</div>
-      </div>
-      <div class="drop-zone" id="zone2" onclick="document.getElementById('fi_orders').click()">
-        <input type="file" id="fi_orders" accept=".xlsx,.xls" onchange="onFile(2,event)">
-        <span class="dz-icon">📦</span>
-        <span class="dz-badge badge-required">Required</span>
-        <div class="dz-label">Order Report</div>
-        <div class="dz-sub">Consolidated order data<br>Has SKU codes & order states</div>
-        <div class="dz-filename" id="fn2">No file chosen</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- costs -->
-  <div class="card">
-    <div class="card-title">Step 2 — Your unit costs</div>
-    <div class="cost-grid">
-      <div class="cost-field">
-        <label>Cost per pad</label>
-        <div class="input-wrap"><span class="prefix">₹</span><input type="number" id="c_pad" value="6" min="0" step="0.5" oninput="refreshCOGS()"></div>
-      </div>
-      <div class="cost-field">
-        <label>Panty liner cost</label>
-        <div class="input-wrap"><span class="prefix">₹</span><input type="number" id="c_liner" value="3" min="0" step="0.5" oninput="refreshCOGS()"></div>
-      </div>
-      <div class="cost-field">
-        <label>Period panty cost</label>
-        <div class="input-wrap"><span class="prefix">₹</span><input type="number" id="c_panty" value="12" min="0" step="0.5" oninput="refreshCOGS()"></div>
-      </div>
-      <div class="cost-field">
-        <label>Packaging / pack</label>
-        <div class="input-wrap"><span class="prefix">₹</span><input type="number" id="c_pkg" value="10" min="0" step="0.5" oninput="refreshCOGS()"></div>
-      </div>
-      <div class="cost-field">
-        <label>Miscellaneous / pack</label>
-        <div class="input-wrap"><span class="prefix">₹</span><input type="number" id="c_misc" value="2" min="0" step="0.5" oninput="refreshCOGS()"></div>
-      </div>
-    </div>
-    <p style="font-size:11px;color:#aaa">COGS per pack = (unit cost × qty in pack) + packaging + misc</p>
-  </div>
-
-  <!-- sku config — revealed after order upload -->
-  <div class="card" id="skuCfgCard" style="display:none">
-    <div class="card-title">Step 3 — SKU pack configuration</div>
-    <p class="hint">Auto-detected from your order report. Verify the product type and pack quantity — COGS updates live.</p>
-    <div class="sku-cfg-wrap">
-      <table class="sku-cfg">
-        <thead><tr>
-          <th>SKU Code</th><th>Product</th><th>Type</th><th>Qty in pack</th><th>COGS / pack</th><th>Formula</th>
-        </tr></thead>
-        <tbody id="skuCfgBody"></tbody>
-      </table>
-    </div>
-  </div>
-
-  <button class="build-btn" id="buildBtn" onclick="buildPL()">
-    <span id="buildBtnText">Build P&L →</span>
-    <span id="buildSpinner" class="spinner" style="display:none"></span>
-  </button>
-  <div id="buildError" style="display:none" class="error-msg"></div>
-
-</div>
-
-<!-- ════ DASHBOARD ════ -->
-<div id="dashboard">
-  <div class="dash-header">
-    <div>
-      <div class="dash-title">March 2026 — SKU P&L</div>
-      <div class="dash-meta" id="dashMeta"></div>
-    </div>
-    <button class="reset-btn" onclick="resetAll()">← New analysis</button>
-  </div>
-
-  <div class="tabs">
-    <div class="tab active" onclick="switchTab('overview',this)">Overview</div>
-    <div class="tab" onclick="switchTab('sku',this)">SKU P&L</div>
-    <div class="tab" onclick="switchTab('charges',this)">Charges</div>
-    <div class="tab" onclick="switchTab('insights',this)">Insights</div>
-  </div>
-
-  <div id="overview" class="panel active"></div>
-  <div id="sku" class="panel"></div>
-  <div id="charges" class="panel"></div>
-  <div id="insights" class="panel"></div>
-</div>
-
-<script>
-const API = '';  // same origin
-let detectedSKUs = [], lastResult = null;
-const f  = n => '₹' + Math.abs(parseFloat(n)||0).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,',');
-const fs = n => { const v=parseFloat(n)||0; return (v>=0?'+₹':'-₹')+Math.abs(v).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g,','); };
-const fp = n => (parseFloat(n)||0).toFixed(1)+'%';
-
-const EXPLAINS = {
-  sp:       {t:"Your listed price on Snapdeal. Every order was placed at this price by the customer.",s:"Order Report → SELLING PRICE"},
-  attempted:{t:"Every row for this SKU — delivered + returned + in-transit. Total market attempts.",s:"Order Report → count of all rows for this SKU CODE"},
-  delivered:{t:"Orders where state = Delivered, Shipped, or In Transit. You incur COGS on these.",s:"Order Report → CURRENT ORDER STATE (non-return, non-cancelled)"},
-  returned: {t:"Orders where state contains 'Return'. Snapdeal reverses the net payment for these.",s:"Order Report → CURRENT ORDER STATE = Return*"},
-  returnRate:{t:"Returned ÷ total attempts. High return rates are catastrophic — you pay courier both ways and get no revenue.",s:"Calculated: returns ÷ (delivered + returned)"},
-  snapNet:  {t:"Calculated from your actual P&L data: for each delivered suborder, Net = Seller Invoice Amount + Total Commission. This varies by delivery zone — standard zone orders net ~₹110.50, remote/NE zone orders net ~₹63.30 (because Snapdeal charges ₹105 courier instead of ₹60). The avg shown is across all your delivered orders for this SKU.",s:"Calculated: Seller Invoice Amount + Total Commission Amount, per suborder from P&L Charges sheet"},
-  snapCut:  {t:"SP minus average net-to-seller. Snapdeal's cut varies by courier zone: standard zone = ₹88.50 cut (₹60 courier), remote/NE zone = ₹135.70 cut (₹105 courier). The avg shown is the mean across all your actual orders for this SKU.",s:"Calculated: SP − avg net per order (from actual P&L charges data)"},
-  adSpend:  {t:"Snapdeal's advertising charges (Advertise Ads Income) are billed as bulk daily amounts — not tied to individual SKUs. Total monthly spend ÷ number of SKUs = allocated share per SKU.",s:"P&L Sheet → Commission sheet → Advertise Ads Income rows"},
-  cogsPack: {t:"Your production cost per pack. Formula: (unit cost × qty per pack) + packaging + miscellaneous.",s:"Your cost inputs × pack configuration"},
-  totalCogs:{t:"COGS per pack × delivered units only. You incur this the moment you dispatch — even if the order returns, you've spent the COGS.",s:"Calculated: COGS/pack × delivered units"},
-  grossProfit:{t:"Net from Snapdeal − Ad spend − COGS. Your actual profit after all platform charges and product cost.",s:"Calculated: Snapdeal net − ad spend − COGS"},
-  grossMargin:{t:"Gross Profit ÷ (SP × delivered units). Healthy D2C marketplace margin: 25–40%.",s:"Calculated: Gross Profit ÷ potential revenue"},
-  profitPack:{t:"Gross Profit ÷ delivered units. The real cash you make (or lose) on each successfully delivered pack.",s:"Calculated: Gross Profit ÷ delivered units"},
-  returnLoss:{t:"Each return costs you: ₹110.50 clawed back by Snapdeal + ₹36 COGS you spent dispatching = ~₹146.50 total loss per return.",s:"Calculated: net reversal + COGS/pack"},
-  totalSnapNet:{t:"(Delivered × ₹110.50) − (Returned × ₹110.50). This is what Snapdeal actually puts in your account.",s:"Calculated from order counts × net per order"},
-};
-
-function explain(id) {
-  const e = EXPLAINS[id]||{};
-  return `<div class="pl-explain" id="exp_${id}_${Math.random().toString(36).slice(2,7)}">
-    ${e.t||''}${e.s?`<div class="src">Source: ${e.s}</div>`:''}
-  </div>`;
-}
-
-function plRow(labelTxt, valTxt, cls, bold, explainId, indent) {
-  const eid = 'e_'+Math.random().toString(36).slice(2,9);
-  const exp = EXPLAINS[explainId]||{};
-  return `
-  <div class="pl-row" onclick="document.getElementById('${eid}').classList.toggle('open')">
-    <span class="pl-label${bold?' bold':''}${indent?' indented':''}">
-      ${labelTxt}
-      <span class="explain-toggle" title="What is this?">i</span>
-    </span>
-    <span class="pl-value ${cls||''} ${bold?'bold':''}">${valTxt}</span>
-  </div>
-  <div class="pl-explain" id="${eid}">
-    ${exp.t||'(explanation)'}${exp.s?`<div class="src">Source: ${exp.s}</div>`:''}
-  </div>`;
-}
-
-function onFile(n, e) {
-  const file = e.target.files[0]; if(!file) return;
-  const zone = document.getElementById('zone'+n);
-  const fn   = document.getElementById('fn'+n);
-  zone.classList.add('has-file');
-  fn.textContent = file.name;
-  if(n===1) setPill(2,'active');
-  if(n===2) { setPill(2,'active'); detectSKUs(file); }
-}
-
-function setPill(n, state) {
-  const p = document.getElementById('pill'+n);
-  if(!p) return;
-  p.classList.remove('active','done');
-  p.classList.add(state);
-}
-
-async function detectSKUs(file) {
-  const fd = new FormData(); fd.append('orders', file);
-  try {
-    const r = await fetch(API+'/api/detect-skus',{method:'POST',body:fd});
-    const d = await r.json();
-    detectedSKUs = d.skus || [];
-    renderSKUConfig();
-    document.getElementById('skuCfgCard').style.display='block';
-    setPill(3,'active');
-  } catch(e) { console.error(e); }
-}
-
-function getCosts() {
-  return {
-    pad:  parseFloat(document.getElementById('c_pad').value)||6,
-    liner:parseFloat(document.getElementById('c_liner').value)||3,
-    panty:parseFloat(document.getElementById('c_panty').value)||12,
-    pkg:  parseFloat(document.getElementById('c_pkg').value)||10,
-    misc: parseFloat(document.getElementById('c_misc').value)||2,
-  };
-}
-
-function calcCOGS(type, qty) {
-  const c = getCosts();
-  const u = type==='pad'?c.pad:type==='liner'?c.liner:c.panty;
-  return (u*qty)+c.pkg+c.misc;
-}
-
-function renderSKUConfig() {
-  const c = getCosts();
-  const tbody = document.getElementById('skuCfgBody');
-  tbody.innerHTML = detectedSKUs.map((s,i) => {
-    const cogs = calcCOGS(s.type, s.qty);
-    const uv = s.type==='pad'?c.pad:s.type==='liner'?c.liner:c.panty;
-    return `<tr>
-      <td class="sku-code">${s.sku}</td>
-      <td style="font-size:12px;color:#666;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.productName}</td>
-      <td><select id="type_${i}" onchange="updateSKU(${i},'type',this.value)">
-        <option value="pad"${s.type==='pad'?' selected':''}>Sanitary pad</option>
-        <option value="liner"${s.type==='liner'?' selected':''}>Panty liner</option>
-        <option value="panty"${s.type==='panty'?' selected':''}>Period panty</option>
-      </select></td>
-      <td><input type="number" id="qty_${i}" value="${s.qty}" min="1" max="100" style="width:55px;text-align:center" oninput="updateSKU(${i},'qty',this.value)"></td>
-      <td class="cogs-preview" id="cogsp_${i}">${f(cogs)}</td>
-      <td class="formula-note" id="formula_${i}">(${s.qty}×₹${uv})+₹${c.pkg}+₹${c.misc}</td>
-    </tr>`;
-  }).join('');
-}
-
-function updateSKU(i,field,val) {
-  if(field==='type') detectedSKUs[i].type=val;
-  if(field==='qty')  detectedSKUs[i].qty=parseInt(val)||1;
-  refreshCOGS();
-}
-
-function refreshCOGS() {
-  const c = getCosts();
-  if(!detectedSKUs.length) return;
-  renderSKUConfig();
-}
-
-async function buildPL() {
-  const orderFile = document.getElementById('fi_orders').files[0];
-  if(!orderFile) { showError('Please upload the Order Report file.'); return; }
-
-  setBuildLoading(true);
-  hideError();
-
-  const fd = new FormData();
-  const plFile = document.getElementById('fi_pl').files[0];
-  if(plFile) fd.append('pl', plFile);
-  fd.append('orders', orderFile);
-
-  const c = getCosts();
-  fd.append('c_pad',   c.pad);
-  fd.append('c_liner', c.liner);
-  fd.append('c_panty', c.panty);
-  fd.append('c_pkg',   c.pkg);
-  fd.append('c_misc',  c.misc);
-  fd.append('skuConfigs', JSON.stringify(detectedSKUs));
-
-  try {
-    const r = await fetch(API+'/api/analyze',{method:'POST',body:fd});
-    const d = await r.json();
-    if(d.error) { showError(d.error); setBuildLoading(false); return; }
-    lastResult = d;
-    renderDashboard(d);
-    document.getElementById('uploadStage').style.display='none';
-    document.getElementById('dashboard').style.display='block';
-    setPill(4,'active');
-  } catch(e) {
-    showError('Server error: '+e.message);
+function sheetToRows(wb, hints) {
+  for (const name of wb.SheetNames) {
+    if (hints.some(h => name.toLowerCase().includes(h)))
+      return XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
   }
-  setBuildLoading(false);
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
 }
 
-function setBuildLoading(on) {
-  document.getElementById('buildBtn').disabled=on;
-  document.getElementById('buildBtnText').textContent=on?'Analyzing...':'Build P&L →';
-  document.getElementById('buildSpinner').style.display=on?'block':'none';
-}
-function showError(msg){ const el=document.getElementById('buildError'); el.style.display='block'; el.textContent=msg; }
-function hideError(){ document.getElementById('buildError').style.display='none'; }
+function n(v) { return parseFloat(v) || 0; }
 
-function renderDashboard(d) {
-  const {skus, totalAdSpend, NET_PER_ORDER} = d;
-  const tOrders   = skus.reduce((a,s)=>a+s.orders,0);
-  const tReturned = skus.reduce((a,s)=>a+s.returned,0);
-  const tSnapNet  = skus.reduce((a,s)=>a+s.totalSnapNet,0);
-  const tCOGS     = skus.reduce((a,s)=>a+s.totalCOGS,0);
-  const tGP       = skus.reduce((a,s)=>a+s.grossProfit,0);
-  const tPotential= skus.reduce((a,s)=>a+s.potentialRev,0);
-  const tReturnRate=(tOrders+tReturned)>0?tReturned/(tOrders+tReturned)*100:0;
-  const overallMargin=tPotential>0?tGP/tPotential*100:0;
-  const tSnapCut  = skus.reduce((a,s)=>a+s.totalSnapCut,0);
-  const tReturnLoss=skus.reduce((a,s)=>a+s.totalReturnLoss,0);
-
-  document.getElementById('dashMeta').textContent=`${skus.length} SKU${skus.length!==1?'s':''} · ${tOrders+tReturned} attempted · ${tOrders} delivered · ₹${NET_PER_ORDER}/order net`;
-
-  // ── OVERVIEW ──
-  const maxWF = Math.max(tPotential, Math.abs(tSnapCut), Math.abs(tReturnLoss), Math.abs(tCOGS), Math.abs(totalAdSpend), Math.abs(tSnapNet));
-  const wfBar = (v,c) => `<div class="wf-bar-wrap"><div class="wf-bar-bg"><div class="wf-bar-fill${c?` ${c}`:''}\" style="width:${Math.round(Math.abs(v)/maxWF*100)}%"></div></div></div>`;
-
-  document.getElementById('overview').innerHTML = `
-  <div class="kpi-strip">
-    <div class="kpi"><div class="kpi-label">Potential revenue</div><div class="kpi-value">${f(tPotential)}</div></div>
-    <div class="kpi"><div class="kpi-label">Snapdeal net</div><div class="kpi-value ${tSnapNet>=0?'pos':'neg'}">${f(tSnapNet)}</div></div>
-    <div class="kpi"><div class="kpi-label">COGS</div><div class="kpi-value neg">${f(tCOGS)}</div></div>
-    <div class="kpi"><div class="kpi-label">Gross profit</div><div class="kpi-value ${tGP>=0?'pos':'neg'}">${fs(tGP)}</div></div>
-    <div class="kpi"><div class="kpi-label">Gross margin</div><div class="kpi-value ${overallMargin>=0?'pos':'neg'}">${fp(overallMargin)}</div></div>
-    <div class="kpi"><div class="kpi-label">Return rate</div><div class="kpi-value warn">${fp(tReturnRate)}</div></div>
-    <div class="kpi"><div class="kpi-label">Delivered</div><div class="kpi-value">${tOrders}</div></div>
-    <div class="kpi"><div class="kpi-label">Returned</div><div class="kpi-value neg">${tReturned}</div></div>
-    <div class="kpi"><div class="kpi-label">Remote zone orders</div><div class="kpi-value warn">${skus.reduce((a,s)=>a+s.remoteOrders,0)}</div></div>
-  </div>
-  <div class="section-label">Revenue waterfall — tap any row to understand it</div>
-  <div class="waterfall">
-    ${wfRow('SP × delivered orders', fs(tPotential), 'pos', false, false, wfBar(tPotential,''))}
-    ${wfRow('Snapdeal cut (−₹88.50/order)', fs(-tSnapCut), 'neg', false, true, wfBar(tSnapCut,''))}
-    ${wfRow('Net from Snapdeal (delivered)', fs(skus.reduce((a,s)=>a+s.netDelivered,0)), 'pos', true, false, wfBar(skus.reduce((a,s)=>a+s.netDelivered,0),''))}
-    ${wfRow('Return clawbacks', fs(-skus.reduce((a,s)=>a+s.netReturned,0)), 'neg', false, true, wfBar(skus.reduce((a,s)=>a+s.netReturned,0),''))}
-    ${wfRow('Total Snapdeal net', fs(tSnapNet), tSnapNet>=0?'pos':'neg', true, false, wfBar(tSnapNet,''))}
-    ${wfRow('Advertising spend', fs(-totalAdSpend), 'neg', false, true, wfBar(totalAdSpend,''))}
-    ${wfRow('COGS (your product cost)', fs(-tCOGS), 'neg', false, true, wfBar(tCOGS,'cogs'))}
-    ${wfRow('Gross profit', fs(tGP), tGP>=0?'pos':'neg', true, false, '')}
-  </div>`;
-
-  // ── SKU P&L ──
-  document.getElementById('sku').innerHTML = `<div class="sku-grid">${skus.map(s => {
-    const signal = s.returnRate>60?'kill':s.grossMarginPct<0?'review':s.grossMarginPct<15?'watch':'keep';
-    const vLabel = {kill:'Kill it',review:'Negative margin',watch:'Watch — thin',keep:'Keep & scale'}[signal];
-    const c = getCosts();
-    const cfg = detectedSKUs.find(x=>x.sku===s.sku)||{qty:s.qty,type:s.type};
-    const uv = cfg.type==='pad'?c.pad:cfg.type==='liner'?c.liner:c.panty;
-    const cogsFormula = `(${cfg.qty} × ₹${uv}) + ₹${c.pkg} + ₹${c.misc}`;
-    return `<div class="sku-card">
-      <div class="sku-card-header">
-        <div>
-          <div class="sku-name">${s.sku}</div>
-          <div class="sku-product">${s.productName}${s.attr?' · '+s.attr:''}</div>
-        </div>
-        <span class="verdict-badge v-${signal}">${vLabel}</span>
-      </div>
-      <div class="sku-body">
-        <div class="sku-col">
-          <div class="sku-section-title">Orders</div>
-          ${plRow('Selling price (SP)', f(s.sp), 'pos', false, 'sp', false)}
-          ${plRow('Avg net / order' + (s.remoteOrders > 0 ? ' ⚠️ '+s.remoteOrders+' remote' : ''), '₹'+s.avgNetPerOrder.toFixed(2), 'warn', false, 'snapNet', false)}
-          ${plRow('Avg Snapdeal cut / order', f(s.avgCutPerOrder), 'neg', false, 'snapCut', false)}
-          ${plRow('Units attempted', ''+s.totalAttempts, '', false, 'attempted', false)}
-          ${plRow('Delivered', ''+s.orders, 'pos', false, 'delivered', true)}
-          ${plRow('Returned', ''+s.returned, 'neg', false, 'returned', true)}
-          ${plRow('Return rate', fp(s.returnRate), s.returnRate>50?'neg':'warn', true, 'returnRate', false)}
-          <div class="sku-section-title">Snapdeal cashflow</div>
-          ${plRow('Net from delivered orders', fs(s.netDelivered), 'pos', false, 'totalSnapNet', false)}
-          ${plRow('Clawed back on returns', fs(-s.netReturned), 'neg', false, 'snapNet', true)}
-          ${plRow('Total Snapdeal net', fs(s.totalSnapNet), s.totalSnapNet>=0?'pos':'neg', true, 'totalSnapNet', false)}
-          <div class="return-loss-box" style="margin-top:.75rem">
-            <div style="font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--red);margin-bottom:.5rem">Loss per returned pack (avg)</div>
-            ${plRow('Revenue clawed back', f(s.NET_PER_ORDER), 'neg', false, 'returnLoss', false)}
-            ${plRow('+ COGS lost', f(s.unitCOGS), 'neg', false, 'cogsPack', false)}
-            <div style="display:flex;justify-content:space-between;padding:.4rem 0;font-weight:600;font-size:13px;border-top:1px solid #FFCDD2;margin-top:.25rem">
-              <span style="color:var(--red)">Total loss / return</span>
-              <span class="mono neg">−${f(s.returnLoss)}</span>
-            </div>
-            <div style="display:flex;justify-content:space-between;padding:.4rem 0;font-weight:600;font-size:12px">
-              <span style="color:var(--red)">${s.returned} returns total</span>
-              <span class="mono neg">−${f(s.totalReturnLoss)}</span>
-            </div>
-          </div>
-        </div>
-        <div class="sku-col">
-          <div class="sku-section-title">Your costs</div>
-          ${plRow('COGS / pack', f(s.unitCOGS), 'neg', false, 'cogsPack', false)}
-          <div style="font-size:11px;color:#aaa;padding:.2rem 0 .5rem;font-style:italic">${cogsFormula}</div>
-          ${plRow('Delivered packs', ''+s.orders, '', false, 'delivered', false)}
-          ${plRow('Total COGS', f(s.totalCOGS), 'neg', true, 'totalCogs', false)}
-          ${plRow('Ad spend (allocated)', f(s.adShare), 'neg', false, 'adSpend', false)}
-          <div class="sku-section-title" style="margin-top:1rem">P&L</div>
-          <div class="summary-box">
-            ${plRow('Snapdeal net', fs(s.totalSnapNet), s.totalSnapNet>=0?'pos':'neg', false, 'totalSnapNet', false)}
-            ${plRow('Less: ad spend', '−'+f(s.adShare), 'neg', false, 'adSpend', true)}
-            ${plRow('Less: COGS', '−'+f(s.totalCOGS), 'neg', false, 'totalCogs', true)}
-            ${plRow('Gross profit', fs(s.grossProfit), s.grossProfit>=0?'pos':'neg', true, 'grossProfit', false)}
-            ${plRow('Gross margin %', fp(s.grossMarginPct), s.grossMarginPct>=0?'pos':'neg', true, 'grossMargin', false)}
-          </div>
-          <div class="sku-section-title" style="margin-top:1rem">Per delivered pack</div>
-          <div class="summary-box">
-            ${plRow('Avg Snapdeal net / order', '₹'+s.avgNetPerOrder.toFixed(2), 'warn', false, 'snapNet', false)}
-            ${plRow('COGS / pack', '−'+f(s.unitCOGS), 'neg', false, 'cogsPack', false)}
-            ${plRow('Ad share / pack', '−'+f(s.orders>0?s.adShare/s.orders:0), 'neg', false, 'adSpend', false)}
-            ${plRow('Profit / pack', fs(s.profitPerUnit), s.profitPerUnit>=0?'pos':'neg', true, 'profitPack', false)}
-          </div>
-        </div>
-      </div>
-    </div>`;
-  }).join('')}</div>`;
-
-  // ── CHARGES ──
-  const chargeItems = [
-    {l:"Snapdeal's total cut",    v:tSnapCut,      id:'snapCut', c:false},
-    {l:"Return losses",           v:tReturnLoss,   id:'returnLoss', c:false},
-    {l:"COGS",                    v:tCOGS,         id:'cogsPack', c:true},
-    {l:"Advertising spend",       v:totalAdSpend,  id:'adSpend', c:false},
-  ].filter(x=>x.v>0).sort((a,b)=>b.v-a.v);
-  const maxC = chargeItems[0]?.v||1;
-
-  document.getElementById('charges').innerHTML = `
-  <div class="section-label">What you pay to sell on Snapdeal at ₹${skus[0]?.sp||199} SP</div>
-  <div class="card" style="padding:1.25rem">
-    <div style="background:var(--amber-light);border-left:3px solid var(--amber);padding:.75rem 1rem;border-radius:0 var(--radius) var(--radius) 0;font-size:12px;color:#5D4037;margin-bottom:1.25rem;line-height:1.7">
-      <strong>Snapdeal's fee structure is opaque by design.</strong> They don't show you a clean fee breakdown per order. Instead they credit a variable invoice amount, then charge separately in the charges sheet. The net varies by delivery zone: standard zone = ₹110.50/order (₹60 courier), remote/NE zone = ₹63.30/order (₹105 courier). Avg cut for this SKU = ₹${(skus[0]?.avgCutPerOrder||88.5).toFixed(2)}/order. Calculated from actual suborder data in your P&L file.
-    </div>
-    ${chargeItems.map(c => {
-      const pct = tPotential>0?(c.v/tPotential*100):0;
-      const eid = 'ce_'+Math.random().toString(36).slice(2,7);
-      const exp = EXPLAINS[c.id]||{};
-      return `<div class="charge-bar-row">
-        <div class="charge-bar-header" onclick="document.getElementById('${eid}').classList.toggle('open')">
-          <span class="charge-bar-name">${c.l} <span class="explain-toggle">i</span></span>
-          <span class="charge-bar-amount">${f(c.v)} &nbsp;<strong>${fp(pct)} of potential</strong></span>
-        </div>
-        <div class="explain-box" id="${eid}">${exp.t||''}${exp.s?`<div class="explain-src">Source: ${exp.s}</div>`:''}</div>
-        <div class="charge-bar-track"><div class="charge-bar-fill${c.c?' cogs':''}" style="width:${Math.round(c.v/maxC*100)}%"></div></div>
-      </div>`;
-    }).join('')}
-  </div>
-
-  <div class="section-label">Per-order economics at ₹${skus[0]?.sp||199} SP</div>
-  <div class="per-order-grid">
-    <div class="po-box delivered-box">
-      <div class="po-title green">✓ Delivered order</div>
-      ${plRow('Customer pays', f(skus[0]?.sp||199), 'pos', false, 'sp', false)}
-      ${plRow('Avg Snapdeal cut', f(skus[0]?.avgCutPerOrder||88.5), 'neg', false, 'snapCut', false)}
-      ${plRow('Avg you receive (net)', '₹'+(skus[0]?.avgNetPerOrder||110.5).toFixed(2), 'warn', true, 'snapNet', false)}
-      ${plRow('COGS / pack', '−'+f(skus[0]?.unitCOGS||36), 'neg', false, 'cogsPack', false)}
-      ${plRow('Ad share', '−'+f(skus[0]?.adShare&&skus[0].orders>0?skus[0].adShare/skus[0].orders:57), 'neg', false, 'adSpend', false)}
-      ${plRow('Profit / order', fs(skus[0]?.profitPerUnit||0), (skus[0]?.profitPerUnit||0)>=0?'pos':'neg', true, 'profitPack', false)}
-    </div>
-    <div class="po-box returned-box">
-      <div class="po-title red">✗ Returned order</div>
-      ${plRow('Snapdeal credits (then reverses)', '₹'+(skus[0]?.avgNetPerOrder||110.5).toFixed(2), 'warn', false, 'snapNet', false)}
-      ${plRow('Net from Snapdeal', '₹0', '', true, 'snapNet', false)}
-      ${plRow('COGS (irrecoverable)', '−'+f(skus[0]?.unitCOGS||36), 'neg', false, 'cogsPack', false)}
-      ${plRow('Ad spend (wasted)', '−'+f(skus[0]?.adShare&&skus[0].orders>0?skus[0].adShare/skus[0].orders:57), 'neg', false, 'adSpend', false)}
-      ${plRow('Total loss / return', '−'+f((skus[0]?.returnLoss||146)), 'neg', true, 'returnLoss', false)}
-    </div>
-  </div>`;
-
-  // ── INSIGHTS ──
-  const insights = [];
-  const tRetRate = (tOrders+tReturned)>0?tReturned/(tOrders+tReturned)*100:0;
-  if(tRetRate>40) insights.push({t:'kill',h:'Return rate is destroying economics',b:`${fp(tRetRate)} of all attempts return. Each return costs you ≈${f(skus[0]?.returnLoss||146)} — the Snapdeal credit reversed + your COGS lost on that dispatched pack.`});
-  if(tGP<0) insights.push({t:'kill',h:'Cash-negative operation',b:`Snapdeal nets you ${fs(tSnapNet)}. After ad spend of ${f(totalAdSpend)} and COGS of ${f(tCOGS)}, gross profit is ${fs(tGP)}. You are spending more than you earn.`});
-  skus.forEach(s=>{
-    if(s.returnRate>60) insights.push({t:'kill',h:`Pause immediately — ${s.sku}`,b:`${fp(s.returnRate)} return rate. ${s.returned} returns × ≈${f(s.returnLoss)}/return = ${f(s.totalReturnLoss)} destroyed. Gross profit: ${fs(s.grossProfit)}.`});
-    else if(s.grossMarginPct<0) insights.push({t:'warn',h:`Negative margin — ${s.sku}`,b:`Snapdeal nets ₹${NET_PER_ORDER}/order. After COGS ₹${s.unitCOGS} and ad share ₹${s.adShare.toFixed(0)}, you lose ${fs(-s.profitPerUnit)} per delivered pack.`});
-    else if(s.grossMarginPct>0&&s.returnRate<30) insights.push({t:'good',h:`Scale this — ${s.sku}`,b:`${fp(s.grossMarginPct)} gross margin, ${fp(s.returnRate)} return rate. ${fs(s.profitPerUnit)} profit per delivered pack. Push more inventory here.`});
-  });
-  const sp = skus[0]?.sp||199;
-  insights.push({t:'warn',h:`Snapdeal takes ${((sp-NET_PER_ORDER)/sp*100).toFixed(1)}% of every sale`,b:`At ₹${sp} SP, Snapdeal keeps ₹${(sp-NET_PER_ORDER).toFixed(2)} (courier + commission + fees + IGST). You keep ₹${NET_PER_ORDER}. After your COGS of ₹${skus[0]?.unitCOGS||36}/pack and ads, you have ₹${(NET_PER_ORDER-(skus[0]?.unitCOGS||36)-(skus[0]?.adShare&&skus[0].orders>0?skus[0].adShare/skus[0].orders:57)).toFixed(2)}/order left.`});
-
-  document.getElementById('insights').innerHTML = insights.map(i=>`
-  <div class="insight-card ${i.t}">
-    <div class="insight-title ${i.t}">${i.h}</div>
-    <div class="insight-body">${i.b}</div>
-  </div>`).join('') || '<p style="color:#aaa">No critical signals.</p>';
+function inferType(sku, name) {
+  const s = (sku + ' ' + name).toLowerCase();
+  if (s.includes('liner')) return 'liner';
+  if (s.includes('panty')) return 'panty';
+  return 'pad';
 }
 
-function wfRow(label, val, cls, bold, indent, barHtml) {
-  return `<div class="wf-row${bold?' total':''}${indent?' section-total':''}">
-    <span class="wf-label${indent?' indented':''}${bold?' bold':''}">${label}</span>
-    <div style="display:flex;align-items:center;gap:.75rem">
-      ${barHtml}
-      <span class="wf-val ${cls}">${val}</span>
-    </div>
-  </div>`;
+function inferQty(sku) {
+  const m = sku.match(/[_\-](\d+)$/);
+  if (m) return parseInt(m[1]);
+  const m2 = sku.match(/(\d+)$/);
+  if (m2) return parseInt(m2[1]);
+  return 1;
 }
 
-function switchTab(name, el) {
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
-  el.classList.add('active');
-  document.getElementById(name).classList.add('active');
+function normSub(v) {
+  if (!v || String(v).trim() === '' || String(v) === 'nan') return '';
+  const s = String(v).trim();
+  if (s.includes('e') || s.includes('.')) {
+    try { return String(Math.round(parseFloat(s))); } catch(e) { return s; }
+  }
+  return s;
 }
 
-function resetAll() {
-  lastResult=null; detectedSKUs=[];
-  ['fi_pl','fi_orders'].forEach(id=>document.getElementById(id).value='');
-  ['fn1','fn2'].forEach(id=>document.getElementById(id).textContent='No file chosen');
-  ['zone1','zone2'].forEach(id=>document.getElementById(id).classList.remove('has-file'));
-  document.getElementById('skuCfgCard').style.display='none';
-  document.getElementById('skuCfgBody').innerHTML='';
-  document.getElementById('dashboard').style.display='none';
-  document.getElementById('uploadStage').style.display='block';
-  ['pill1','pill2','pill3','pill4'].forEach((p,i)=>{
-    document.getElementById(p).className='step-pill'+(i===0?' active':'');
-  });
-  window.scrollTo({top:0,behavior:'smooth'});
-}
-</script>
-</body>
-</html>
+app.post('/api/analyze',
+  upload.fields([{ name: 'pl', maxCount: 1 }, { name: 'orders', maxCount: 1 }]),
+  (req, res) => {
+    try {
+      if (!req.files?.orders) return res.status(400).json({ error: 'Order report file is required.' });
+
+      const costs = {
+        pad:   n(req.body.c_pad)   || 6,
+        liner: n(req.body.c_liner) || 3,
+        panty: n(req.body.c_panty) || 12,
+        pkg:   n(req.body.c_pkg)   || 10,
+        misc:  n(req.body.c_misc)  || 2,
+      };
+
+      const skuConfigs = JSON.parse(req.body.skuConfigs || '[]');
+      const cfgMap = {};
+      skuConfigs.forEach(c => { cfgMap[c.sku] = c; });
+
+      function cogsForSku(sku, productName) {
+        const cfg  = cfgMap[sku];
+        const type = cfg ? cfg.type : inferType(sku, productName);
+        const qty  = cfg ? cfg.qty  : inferQty(sku);
+        const unit = type === 'pad' ? costs.pad : type === 'liner' ? costs.liner : costs.panty;
+        return { cogs: (unit * qty) + costs.pkg + costs.misc, type, qty };
+      }
+
+      const wb2 = XLSX.read(req.files.orders[0].buffer, { type: 'buffer' });
+      const wb1 = req.files.pl ? XLSX.read(req.files.pl[0].buffer, { type: 'buffer' }) : null;
+
+      const orderRows    = sheetToRows(wb2, ['order', 'consolidate', 'comp']);
+      const chargesRows  = wb1 ? sheetToRows(wb1, ['commission', 'charges', 'marketing']) : [];
+      const nonOrderRows = wb1 ? sheetToRows(wb1, ['non order', 'non-order', 'nonorder', 'non_order']) : [];
+
+      // ── Pass 1: build SKU map ──────────────────────────────────────────────
+      const skuMap = {}, invToSku = {}, subToSku = {}, subToInvAmt = {};
+
+      for (const o of orderRows) {
+        const sku    = String(o['SKU CODE'] || '').trim();
+        const inv    = String(o['INVOICE NUMBER'] || '').trim();
+        const sub    = normSub(o['SUBORDER CODE']);
+        const state  = String(o['CURRENT ORDER STATE'] || '').toLowerCase();
+        const sp     = n(o['SELLING PRICE']);
+        const invAmt = n(o['SELLER INVOICE AMOUNT']);
+        const name   = String(o['PRODUCT NAME'] || '');
+        const attr   = String(o['ATTRIBUTES'] || '');
+        if (!sku) continue;
+        if (inv) invToSku[inv] = sku;
+        if (sub) { subToSku[sub] = sku; subToInvAmt[sub] = invAmt; }
+        if (!skuMap[sku]) {
+          const { cogs, type, qty } = cogsForSku(sku, name);
+          skuMap[sku] = {
+            sku, productName: name, attr, sp, type, qty,
+            orders: 0, returned: 0,
+            unitCOGS: cogs, totalCOGS: 0,
+            // Stage 1 components
+            totalInvoiceAmt: 0,
+            totalMarketingFee: 0,
+            totalCourierFee: 0,
+            totalPaymentFee: 0,
+            totalIGST: 0,
+            totalWebAds: 0,
+            grossPayableDelivered: 0,
+            totalReturnReversal: 0,
+            // Stage 2
+            totalTDS: 0,
+            totalTCS: 0,
+            // zone
+            remoteOrders: 0, standardOrders: 0,
+          };
+        }
+        const s = skuMap[sku];
+        const isRet = state.includes('return');
+        const isCan = state.includes('cancel');
+        if (isRet)       { s.returned++; }
+        else if (!isCan) { s.orders++; s.totalCOGS += s.unitCOGS; }
+      }
+
+      // ── Pass 2: charges sheet ──────────────────────────────────────────────
+      let totalAdSpend = 0;
+
+      for (const c of chargesRows) {
+        const tx    = String(c['Transaction Type'] || '').toLowerCase();
+        const sub   = normSub(c['Sub Order No']);
+        const inv   = String(c['Invoice Number'] || '').trim();
+        const total = n(c['Total Commission Amount']);
+        const mkt   = n(c['Marketing Fee']);
+        const cour  = n(c['Courier Fee']);
+        const pmt   = n(c['Payment Collection Fee']);
+        const igst  = n(c['Igst'] || c['IGST'] || 0);
+
+        // Bulk ad spend — account level, no SKU
+        if (tx.includes('advertise') || tx.includes('ads income')) {
+          totalAdSpend += Math.abs(total); continue;
+        }
+
+        const sku = subToSku[sub] || invToSku[inv];
+
+        // Delivered order invoice
+        if (tx.includes('vendor invoice')) {
+          if (!sku || !skuMap[sku]) continue;
+          const s = skuMap[sku];
+          const invAmt = subToInvAmt[sub] || 0;
+          s.totalInvoiceAmt   += invAmt;
+          s.totalMarketingFee += mkt;
+          s.totalCourierFee   += cour;
+          s.totalPaymentFee   += pmt;
+          s.totalIGST         += igst;
+          s.grossPayableDelivered += (invAmt + total);
+          if (Math.abs(cour) > 80) s.remoteOrders++;
+          else                     s.standardOrders++;
+        }
+
+        // Per-order web ads & stock-out charges
+        if (tx.includes('web ads') || tx.includes('stock out')) {
+          if (!sku || !skuMap[sku]) continue;
+          skuMap[sku].totalWebAds         += total;
+          skuMap[sku].grossPayableDelivered += total;
+        }
+
+        // Return reversal
+        if (tx.includes('return to vendor')) {
+          if (!sku || !skuMap[sku]) continue;
+          skuMap[sku].totalReturnReversal += Math.abs(total);
+        }
+      }
+
+      // ── Pass 3: Non-Order Transactions → TDS/TCS ──────────────────────────
+      for (const r of nonOrderRows) {
+        const tx  = String(r['Transaction Type'] || '').toLowerCase();
+        const sub = normSub(r['Sub Order No']);
+        const amt = n(r['Gross Amount']);
+        if (!tx.includes('tds') && !tx.includes('tcs')) continue;
+        const sku = subToSku[sub];
+        if (!sku || !skuMap[sku]) continue;
+        if (tx.includes('tcs')) skuMap[sku].totalTCS += amt;
+        else                    skuMap[sku].totalTDS += amt;
+      }
+
+      // ── Allocate ad spend equally across SKUs ──────────────────────────────
+      const skuList = Object.keys(skuMap);
+      const adShare = skuList.length > 0 ? totalAdSpend / skuList.length : 0;
+
+      // ── Final P&L per SKU ──────────────────────────────────────────────────
+      const FALLBACK_GROSS = 91.71;
+
+      const skus = Object.values(skuMap).map(s => {
+        const hasActual = s.grossPayableDelivered > 0;
+
+        // STAGE 1 — Gross Seller Payable
+        const grossPayableDelivered = hasActual ? s.grossPayableDelivered : s.orders * FALLBACK_GROSS;
+        const grossPayableNet       = grossPayableDelivered - s.totalReturnReversal;
+
+        // STAGE 2 — Net Seller Payable (after TDS/TCS)
+        const totalTaxDeductions = s.totalTDS + s.totalTCS;
+        const netSellerPayable   = grossPayableNet + totalTaxDeductions;
+
+        // STAGE 3 — Gross Profit (after advertising + COGS)
+        const grossProfit = netSellerPayable - adShare - s.totalCOGS;
+
+        // Derived metrics
+        const totalAttempts  = s.orders + s.returned;
+        const returnRate     = totalAttempts > 0 ? s.returned / totalAttempts * 100 : 0;
+        const potentialRev   = s.sp * s.orders;
+        const grossMarginPct = potentialRev > 0 ? grossProfit / potentialRev * 100 : 0;
+        const profitPerUnit  = s.orders > 0 ? grossProfit / s.orders : 0;
+
+        // Per-order averages
+        const avgGrossPayable  = s.orders > 0 ? grossPayableDelivered / s.orders : FALLBACK_GROSS;
+        const avgCutPerOrder   = s.sp - avgGrossPayable;
+        const avgTDSPerOrder   = s.orders > 0 ? totalTaxDeductions / s.orders : 0;
+        const avgNetPerOrder   = avgGrossPayable + avgTDSPerOrder;
+        const avgMarketingFee  = s.orders > 0 ? s.totalMarketingFee / s.orders : 0;
+        const avgCourierFee    = s.orders > 0 ? s.totalCourierFee   / s.orders : 0;
+        const avgPaymentFee    = s.orders > 0 ? s.totalPaymentFee   / s.orders : 0;
+        const avgIGST          = s.orders > 0 ? s.totalIGST         / s.orders : 0;
+        const avgWebAds        = s.orders > 0 ? s.totalWebAds       / s.orders : 0;
+
+        // Return loss per unit = reversal + COGS already spent dispatching
+        const avgReturnReversal = s.returned > 0 ? s.totalReturnReversal / s.returned : avgGrossPayable;
+        const returnLossPerUnit = avgReturnReversal + s.unitCOGS;
+        const totalReturnLoss   = s.returned * returnLossPerUnit;
+
+        return {
+          sku: s.sku, productName: s.productName, attr: s.attr, sp: s.sp,
+          type: s.type, qty: s.qty, unitCOGS: s.unitCOGS,
+          orders: s.orders, returned: s.returned, totalAttempts,
+          returnRate, potentialRev, hasActual,
+          remoteOrders: s.remoteOrders, standardOrders: s.standardOrders,
+          // Stage 1
+          totalInvoiceAmt:      s.totalInvoiceAmt,
+          totalMarketingFee:    s.totalMarketingFee,
+          totalCourierFee:      s.totalCourierFee,
+          totalPaymentFee:      s.totalPaymentFee,
+          totalIGST:            s.totalIGST,
+          totalWebAds:          s.totalWebAds,
+          grossPayableDelivered, totalReturnReversal: s.totalReturnReversal, grossPayableNet,
+          // Stage 2
+          totalTDS:             s.totalTDS,
+          totalTCS:             s.totalTCS,
+          totalTaxDeductions, netSellerPayable,
+          // Stage 3
+          totalCOGS:            s.totalCOGS,
+          adShare, grossProfit, grossMarginPct, profitPerUnit,
+          // Return
+          returnLossPerUnit, totalReturnLoss,
+          // Per-order averages
+          avgGrossPayable, avgCutPerOrder, avgTDSPerOrder, avgNetPerOrder,
+          avgMarketingFee, avgCourierFee, avgPaymentFee, avgIGST, avgWebAds,
+          // Aliases
+          NET_PER_ORDER: avgNetPerOrder,
+          totalSnapNet: netSellerPayable,
+          totalSnapCut: s.orders * avgCutPerOrder,
+        };
+      });
+
+      res.json({ skus, totalAdSpend, detectedSKUs: skuList.map(k => ({
+        sku: skuMap[k].sku, productName: skuMap[k].productName,
+        type: skuMap[k].type, qty: skuMap[k].qty,
+      }))});
+
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+app.post('/api/detect-skus', upload.single('orders'), (req, res) => {
+  try {
+    const wb   = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const rows = sheetToRows(wb, ['order', 'consolidate', 'comp']);
+    const seen = {}, skus = [];
+    for (const o of rows) {
+      const sku  = String(o['SKU CODE'] || '').trim();
+      const name = String(o['PRODUCT NAME'] || '').trim();
+      if (!sku || seen[sku]) continue;
+      seen[sku] = true;
+      skus.push({ sku, productName: name, type: inferType(sku, name), qty: inferQty(sku) });
+    }
+    res.json({ skus });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Snapdeal P&L Analyzer running on http://localhost:${PORT}`));
