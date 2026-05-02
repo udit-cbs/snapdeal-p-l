@@ -358,8 +358,8 @@ const EXPLAINS = {
   delivered:{t:"Orders where state = Delivered, Shipped, or In Transit. You incur COGS on these.",s:"Order Report → CURRENT ORDER STATE (non-return, non-cancelled)"},
   returned: {t:"Orders where state contains 'Return'. Snapdeal reverses the net payment for these.",s:"Order Report → CURRENT ORDER STATE = Return*"},
   returnRate:{t:"Returned ÷ total attempts. High return rates are catastrophic — you pay courier both ways and get no revenue.",s:"Calculated: returns ÷ (delivered + returned)"},
-  snapNet:  {t:"Snapdeal's structure: SP ₹199 → variable invoice (₹168–199 based on promotions) + charges adjustments = always nets to a fixed ₹110.50/order. Verified by cross-referencing every suborder in your March 2026 data.",s:"Verified: P&L Closing Balance sheet — every suborder shows ₹110.50"},
-  snapCut:  {t:"SP minus net-to-seller. Snapdeal takes ₹88.50 on every ₹199 order (44.5% of SP). This covers courier ~₹60, commission ~₹27, payment fee ₹20, IGST ~₹8.77 — all bundled.",s:"Calculated: SP − ₹110.50 net per order"},
+  snapNet:  {t:"Calculated from your actual P&L data: for each delivered suborder, Net = Seller Invoice Amount + Total Commission. This varies by delivery zone — standard zone orders net ~₹110.50, remote/NE zone orders net ~₹63.30 (because Snapdeal charges ₹105 courier instead of ₹60). The avg shown is across all your delivered orders for this SKU.",s:"Calculated: Seller Invoice Amount + Total Commission Amount, per suborder from P&L Charges sheet"},
+  snapCut:  {t:"SP minus average net-to-seller. Snapdeal's cut varies by courier zone: standard zone = ₹88.50 cut (₹60 courier), remote/NE zone = ₹135.70 cut (₹105 courier). The avg shown is the mean across all your actual orders for this SKU.",s:"Calculated: SP − avg net per order (from actual P&L charges data)"},
   adSpend:  {t:"Snapdeal's advertising charges (Advertise Ads Income) are billed as bulk daily amounts — not tied to individual SKUs. Total monthly spend ÷ number of SKUs = allocated share per SKU.",s:"P&L Sheet → Commission sheet → Advertise Ads Income rows"},
   cogsPack: {t:"Your production cost per pack. Formula: (unit cost × qty per pack) + packaging + miscellaneous.",s:"Your cost inputs × pack configuration"},
   totalCogs:{t:"COGS per pack × delivered units only. You incur this the moment you dispatch — even if the order returns, you've spent the COGS.",s:"Calculated: COGS/pack × delivered units"},
@@ -543,6 +543,7 @@ function renderDashboard(d) {
     <div class="kpi"><div class="kpi-label">Return rate</div><div class="kpi-value warn">${fp(tReturnRate)}</div></div>
     <div class="kpi"><div class="kpi-label">Delivered</div><div class="kpi-value">${tOrders}</div></div>
     <div class="kpi"><div class="kpi-label">Returned</div><div class="kpi-value neg">${tReturned}</div></div>
+    <div class="kpi"><div class="kpi-label">Remote zone orders</div><div class="kpi-value warn">${skus.reduce((a,s)=>a+s.remoteOrders,0)}</div></div>
   </div>
   <div class="section-label">Revenue waterfall — tap any row to understand it</div>
   <div class="waterfall">
@@ -576,8 +577,8 @@ function renderDashboard(d) {
         <div class="sku-col">
           <div class="sku-section-title">Orders</div>
           ${plRow('Selling price (SP)', f(s.sp), 'pos', false, 'sp', false)}
-          ${plRow('Snapdeal nets you / order', '₹'+s.NET_PER_ORDER.toFixed(2), 'warn', false, 'snapNet', false)}
-          ${plRow('Snapdeal cut / order', f(s.snapCut), 'neg', false, 'snapCut', false)}
+          ${plRow('Avg net / order' + (s.remoteOrders > 0 ? ' ⚠️ '+s.remoteOrders+' remote' : ''), '₹'+s.avgNetPerOrder.toFixed(2), 'warn', false, 'snapNet', false)}
+          ${plRow('Avg Snapdeal cut / order', f(s.avgCutPerOrder), 'neg', false, 'snapCut', false)}
           ${plRow('Units attempted', ''+s.totalAttempts, '', false, 'attempted', false)}
           ${plRow('Delivered', ''+s.orders, 'pos', false, 'delivered', true)}
           ${plRow('Returned', ''+s.returned, 'neg', false, 'returned', true)}
@@ -587,7 +588,7 @@ function renderDashboard(d) {
           ${plRow('Clawed back on returns', fs(-s.netReturned), 'neg', false, 'snapNet', true)}
           ${plRow('Total Snapdeal net', fs(s.totalSnapNet), s.totalSnapNet>=0?'pos':'neg', true, 'totalSnapNet', false)}
           <div class="return-loss-box" style="margin-top:.75rem">
-            <div style="font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--red);margin-bottom:.5rem">Loss per returned pack</div>
+            <div style="font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--red);margin-bottom:.5rem">Loss per returned pack (avg)</div>
             ${plRow('Revenue clawed back', f(s.NET_PER_ORDER), 'neg', false, 'returnLoss', false)}
             ${plRow('+ COGS lost', f(s.unitCOGS), 'neg', false, 'cogsPack', false)}
             <div style="display:flex;justify-content:space-between;padding:.4rem 0;font-weight:600;font-size:13px;border-top:1px solid #FFCDD2;margin-top:.25rem">
@@ -617,7 +618,7 @@ function renderDashboard(d) {
           </div>
           <div class="sku-section-title" style="margin-top:1rem">Per delivered pack</div>
           <div class="summary-box">
-            ${plRow('Snapdeal nets you', '₹'+s.NET_PER_ORDER.toFixed(2), 'warn', false, 'snapNet', false)}
+            ${plRow('Avg Snapdeal net / order', '₹'+s.avgNetPerOrder.toFixed(2), 'warn', false, 'snapNet', false)}
             ${plRow('COGS / pack', '−'+f(s.unitCOGS), 'neg', false, 'cogsPack', false)}
             ${plRow('Ad share / pack', '−'+f(s.orders>0?s.adShare/s.orders:0), 'neg', false, 'adSpend', false)}
             ${plRow('Profit / pack', fs(s.profitPerUnit), s.profitPerUnit>=0?'pos':'neg', true, 'profitPack', false)}
@@ -640,7 +641,7 @@ function renderDashboard(d) {
   <div class="section-label">What you pay to sell on Snapdeal at ₹${skus[0]?.sp||199} SP</div>
   <div class="card" style="padding:1.25rem">
     <div style="background:var(--amber-light);border-left:3px solid var(--amber);padding:.75rem 1rem;border-radius:0 var(--radius) var(--radius) 0;font-size:12px;color:#5D4037;margin-bottom:1.25rem;line-height:1.7">
-      <strong>Snapdeal's fee structure is opaque by design.</strong> They don't show you a clean fee breakdown per order. Instead they credit a variable invoice amount, then charge separately in the charges sheet. The net is always ₹${NET_PER_ORDER}/order — meaning they take ₹${(skus[0]?.sp-NET_PER_ORDER)||88.50}/order (${((skus[0]?.sp-NET_PER_ORDER||88.5)/(skus[0]?.sp||199)*100).toFixed(1)}% of SP) regardless of promotions.
+      <strong>Snapdeal's fee structure is opaque by design.</strong> They don't show you a clean fee breakdown per order. Instead they credit a variable invoice amount, then charge separately in the charges sheet. The net varies by delivery zone: standard zone = ₹110.50/order (₹60 courier), remote/NE zone = ₹63.30/order (₹105 courier). Avg cut for this SKU = ₹${(skus[0]?.avgCutPerOrder||88.5).toFixed(2)}/order. Calculated from actual suborder data in your P&L file.
     </div>
     ${chargeItems.map(c => {
       const pct = tPotential>0?(c.v/tPotential*100):0;
@@ -662,15 +663,15 @@ function renderDashboard(d) {
     <div class="po-box delivered-box">
       <div class="po-title green">✓ Delivered order</div>
       ${plRow('Customer pays', f(skus[0]?.sp||199), 'pos', false, 'sp', false)}
-      ${plRow('Snapdeal takes', f(skus[0]?.snapCut||88.5), 'neg', false, 'snapCut', false)}
-      ${plRow('You receive (net)', '₹'+NET_PER_ORDER, 'warn', true, 'snapNet', false)}
+      ${plRow('Avg Snapdeal cut', f(skus[0]?.avgCutPerOrder||88.5), 'neg', false, 'snapCut', false)}
+      ${plRow('Avg you receive (net)', '₹'+(skus[0]?.avgNetPerOrder||110.5).toFixed(2), 'warn', true, 'snapNet', false)}
       ${plRow('COGS / pack', '−'+f(skus[0]?.unitCOGS||36), 'neg', false, 'cogsPack', false)}
       ${plRow('Ad share', '−'+f(skus[0]?.adShare&&skus[0].orders>0?skus[0].adShare/skus[0].orders:57), 'neg', false, 'adSpend', false)}
       ${plRow('Profit / order', fs(skus[0]?.profitPerUnit||0), (skus[0]?.profitPerUnit||0)>=0?'pos':'neg', true, 'profitPack', false)}
     </div>
     <div class="po-box returned-box">
       <div class="po-title red">✗ Returned order</div>
-      ${plRow('Snapdeal credits (then reverses)', '₹'+NET_PER_ORDER, 'warn', false, 'snapNet', false)}
+      ${plRow('Snapdeal credits (then reverses)', '₹'+(skus[0]?.avgNetPerOrder||110.5).toFixed(2), 'warn', false, 'snapNet', false)}
       ${plRow('Net from Snapdeal', '₹0', '', true, 'snapNet', false)}
       ${plRow('COGS (irrecoverable)', '−'+f(skus[0]?.unitCOGS||36), 'neg', false, 'cogsPack', false)}
       ${plRow('Ad spend (wasted)', '−'+f(skus[0]?.adShare&&skus[0].orders>0?skus[0].adShare/skus[0].orders:57), 'neg', false, 'adSpend', false)}
