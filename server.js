@@ -70,74 +70,104 @@ app.post('/api/analyze',
         return { cogs: (unit * qty) + costs.pkg + costs.misc, type, qty, unit };
       }
 
-      const NET_PER_ORDER = 110.50;
+      const FALLBACK_NET = 110.50;
       const skuMap = {};
-      const invToSku = {}, subToSku = {};
+      const invToSku = {}, subToSku = {}, subToInvAmt = {};
 
+      // Pass 1: build SKU map from order report
       for (const o of orderRows) {
-        const sku  = String(o['SKU CODE'] || '').trim();
-        const inv  = String(o['INVOICE NUMBER'] || '').trim();
-        const sub  = String(o['SUBORDER CODE'] || '').trim();
+        const sku   = String(o['SKU CODE'] || '').trim();
+        const inv   = String(o['INVOICE NUMBER'] || '').trim();
+        const sub   = String(o['SUBORDER CODE'] || '').trim();
         const state = String(o['CURRENT ORDER STATE'] || '').toLowerCase();
-        const sp   = parseFloat(o['SELLING PRICE']) || 0;
-        const name = String(o['PRODUCT NAME'] || '');
-        const attr = String(o['ATTRIBUTES'] || '');
+        const sp    = parseFloat(o['SELLING PRICE']) || 0;
+        const invAmt = parseFloat(o['SELLER INVOICE AMOUNT']) || 0;
+        const name  = String(o['PRODUCT NAME'] || '');
+        const attr  = String(o['ATTRIBUTES'] || '');
         if (!sku) continue;
         if (inv) invToSku[inv] = sku;
-        if (sub) subToSku[sub] = sku;
+        if (sub) { subToSku[sub] = sku; subToInvAmt[sub] = invAmt; }
         if (!skuMap[sku]) {
           const { cogs, type, qty } = cogsForSku(sku, name);
           skuMap[sku] = { sku, productName: name, attr, sp, type, qty,
-            orders: 0, returned: 0, totalCOGS: 0, unitCOGS: cogs };
+            orders: 0, returned: 0, totalCOGS: 0, unitCOGS: cogs,
+            totalNetDelivered: 0, totalNetReturned: 0, totalSnapCut: 0,
+            remoteOrders: 0, standardOrders: 0 };
         }
         const s = skuMap[sku];
         const isRet = state.includes('return');
         const isCan = state.includes('cancel');
         if (isRet)       { s.returned++; }
-        else if (!isCan) { s.orders++;   s.totalCOGS += s.unitCOGS; }
+        else if (!isCan) { s.orders++; s.totalCOGS += s.unitCOGS; }
       }
 
+      // Pass 2: calculate exact net per order from charges sheet
       let totalAdSpend = 0;
       for (const c of chargesRows) {
-        const tx = String(c['Transaction Type'] || '').toLowerCase();
+        const tx    = String(c['Transaction Type'] || '').toLowerCase();
+        const sub   = String(c['Sub Order No'] || '').trim();
+        const inv   = String(c['Invoice Number'] || '').trim();
         const total = parseFloat(c['Total Commission Amount'] || 0);
-        if (tx.includes('advertise') || tx.includes('ads income')) totalAdSpend += Math.abs(total);
+        const courier = Math.abs(parseFloat(c['Courier Fee'] || 0));
+
+        if (tx.includes('advertise') || tx.includes('ads income')) {
+          totalAdSpend += Math.abs(total); continue;
+        }
+
+        // Delivered invoices: net = invoice_amount + total_commission
+        if (tx.includes('vendor invoice')) {
+          const invAmt = subToInvAmt[sub] || 0;
+          const net    = invAmt + total;
+          const sku    = subToSku[sub] || invToSku[inv];
+          if (sku && skuMap[sku]) {
+            skuMap[sku].totalNetDelivered += net;
+            skuMap[sku].totalSnapCut      += (skuMap[sku].sp - net);
+            if (courier > 80) skuMap[sku].remoteOrders++;
+            else              skuMap[sku].standardOrders++;
+          }
+        }
+
+        // Returns: Snapdeal reverses the net amount
+        if (tx.includes('return to vendor')) {
+          const sku = subToSku[sub] || invToSku[inv];
+          if (sku && skuMap[sku]) skuMap[sku].totalNetReturned += Math.abs(total);
+        }
       }
 
-      const skuList  = Object.keys(skuMap);
-      const adShare  = skuList.length > 0 ? totalAdSpend / skuList.length : 0;
+      const skuList = Object.keys(skuMap);
+      const adShare = skuList.length > 0 ? totalAdSpend / skuList.length : 0;
 
-      // Detect SKUs from order report (for config UI)
       const detectedSKUs = skuList.map(k => ({
-        sku:         skuMap[k].sku,
-        productName: skuMap[k].productName,
-        type:        skuMap[k].type,
-        qty:         skuMap[k].qty,
+        sku: skuMap[k].sku, productName: skuMap[k].productName,
+        type: skuMap[k].type, qty: skuMap[k].qty,
       }));
 
       const skus = Object.values(skuMap).map(s => {
-        const netDelivered  = s.orders   * NET_PER_ORDER;
-        const netReturned   = s.returned * NET_PER_ORDER;
-        const totalSnapNet  = netDelivered - netReturned;
-        const snapCut       = s.sp - NET_PER_ORDER;
-        const totalSnapCut  = s.orders * snapCut;
-        const grossProfit   = totalSnapNet - adShare - s.totalCOGS;
-        const totalAttempts = s.orders + s.returned;
-        const returnRate    = totalAttempts > 0 ? s.returned / totalAttempts * 100 : 0;
-        const potentialRev  = s.sp * s.orders;
-        const grossMarginPct = potentialRev > 0 ? grossProfit / potentialRev * 100 : 0;
-        const profitPerUnit  = s.orders > 0 ? grossProfit / s.orders : 0;
-        const returnLoss     = NET_PER_ORDER + s.unitCOGS;
+        const hasActual       = s.totalNetDelivered > 0;
+        const avgNetPerOrder  = hasActual && s.orders > 0 ? s.totalNetDelivered / s.orders : FALLBACK_NET;
+        const avgCutPerOrder  = s.sp - avgNetPerOrder;
+        const netDelivered    = hasActual ? s.totalNetDelivered : s.orders * FALLBACK_NET;
+        const netReturned     = s.totalNetReturned > 0 ? s.totalNetReturned : s.returned * avgNetPerOrder;
+        const totalSnapNet    = netDelivered - netReturned;
+        const totalSnapCut    = hasActual ? s.totalSnapCut : s.orders * avgCutPerOrder;
+        const grossProfit     = totalSnapNet - adShare - s.totalCOGS;
+        const totalAttempts   = s.orders + s.returned;
+        const returnRate      = totalAttempts > 0 ? s.returned / totalAttempts * 100 : 0;
+        const potentialRev    = s.sp * s.orders;
+        const grossMarginPct  = potentialRev > 0 ? grossProfit / potentialRev * 100 : 0;
+        const profitPerUnit   = s.orders > 0 ? grossProfit / s.orders : 0;
+        const returnLoss      = avgNetPerOrder + s.unitCOGS;
         const totalReturnLoss = s.returned * returnLoss;
         return {
-          ...s, netDelivered, netReturned, totalSnapNet, snapCut,
-          totalSnapCut, adShare, grossProfit, totalAttempts, returnRate,
-          potentialRev, grossMarginPct, profitPerUnit, returnLoss, totalReturnLoss,
-          NET_PER_ORDER
+          ...s, avgNetPerOrder, avgCutPerOrder, netDelivered, netReturned,
+          totalSnapNet, totalSnapCut, adShare, grossProfit, totalAttempts,
+          returnRate, potentialRev, grossMarginPct, profitPerUnit,
+          returnLoss, totalReturnLoss, NET_PER_ORDER: avgNetPerOrder, hasActual,
         };
       });
 
-      res.json({ skus, totalAdSpend, detectedSKUs, NET_PER_ORDER });
+      res.json({ skus, totalAdSpend, detectedSKUs, NET_PER_ORDER: FALLBACK_NET });
+
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: err.message });
