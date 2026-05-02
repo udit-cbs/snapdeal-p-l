@@ -1,0 +1,8 @@
+{
+  "name": "snapdeal-pl-analyzer",
+  "version": "1.0.0",
+  "dependencies": {
+    "xlsx": "^0.18.5",
+    "busboy": "^1.6.0"
+  }
+}
