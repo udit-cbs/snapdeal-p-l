@@ -9,8 +9,8 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST')    { res.status(405).json({ error: 'POST only' }); return; }
 
   try {
-    const buf = await parseFile(req, 'orders');
-    const wb  = XLSX.read(buf, { type: 'buffer' });
+    const buf  = await parseFile(req, 'orders');
+    const wb   = XLSX.read(buf, { type: 'buffer' });
     const rows = sheetToRows(wb, ['order','consolidate','comp']);
     const seen = {}, skus = [];
     for (const o of rows) {
@@ -57,7 +57,7 @@ function inferType(sku, name) {
   return 'pad';
 }
 function inferQty(sku) {
-  const m = sku.match(/[_\-](\d+)$/);  if (m) return parseInt(m[1]);
+  const m  = sku.match(/[_\-](\d+)$/); if (m)  return parseInt(m[1]);
   const m2 = sku.match(/(\d+)$/);       if (m2) return parseInt(m2[1]);
   return 1;
 }
