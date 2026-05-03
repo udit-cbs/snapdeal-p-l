@@ -1,6 +1,8 @@
 const XLSX   = require('xlsx');
 const busboy = require('busboy');
 
+module.exports.config = { api: { bodyParser: false } };
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
