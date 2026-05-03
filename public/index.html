@@ -722,6 +722,64 @@ function setPill(n, state) {
   p.classList.add(state);
 }
 
+
+
+function refreshCOGS() {
+  // Re-render SKU config table with updated COGS preview if visible
+  if (detectedSKUs.length > 0 && document.getElementById('skuCfgCard').style.display !== 'none') {
+    renderSKUConfig();
+  }
+}
+
+function getCosts() {
+  return {
+    pad:   parseFloat(document.getElementById('c_pad').value)   || 6,
+    liner: parseFloat(document.getElementById('c_liner').value) || 3,
+    panty: parseFloat(document.getElementById('c_panty').value) || 12,
+    pkg:   parseFloat(document.getElementById('c_pkg').value)   || 10,
+    misc:  parseFloat(document.getElementById('c_misc').value)  || 2,
+  };
+}
+
+function onFile(which, event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const label  = which === 1 ? 'fn1' : 'fn2';
+  const zone   = which === 1 ? 'zone1' : 'zone2';
+  document.getElementById(label).textContent = file.name;
+  document.getElementById(zone).classList.add('has-file');
+
+  // Auto-detect SKUs when order report is picked (which === 2)
+  if (which === 2) {
+    detectSKUs(file);
+  }
+}
+
+function renderSKUConfig() {
+  const tbody = document.getElementById('skuCfgBody');
+  tbody.innerHTML = '';
+  detectedSKUs.forEach((s, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="padding:.5rem .75rem;font-size:13px;font-family:var(--mono)">${s.sku}</td>
+      <td style="padding:.5rem .75rem;font-size:12px;color:#666;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.productName}</td>
+      <td style="padding:.5rem">
+        <select onchange="detectedSKUs[${i}].type=this.value" style="font-size:12px;padding:.25rem .4rem;border:1px solid #ddd;border-radius:4px">
+          <option value="pad"   ${s.type==='pad'  ?'selected':''}>Pad</option>
+          <option value="liner" ${s.type==='liner'?'selected':''}>Liner</option>
+          <option value="panty" ${s.type==='panty'?'selected':''}>Panty</option>
+        </select>
+      </td>
+      <td style="padding:.5rem">
+        <input type="number" min="1" max="100" value="${s.qty}"
+          onchange="detectedSKUs[${i}].qty=parseInt(this.value)||1"
+          style="width:60px;font-size:12px;padding:.25rem .4rem;border:1px solid #ddd;border-radius:4px;text-align:center">
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
 function resetAll() {
   lastResult=null; detectedSKUs=[];
   ['fi_pl','fi_orders'].forEach(id=>document.getElementById(id).value='');
