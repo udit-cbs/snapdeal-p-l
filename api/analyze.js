@@ -3,41 +3,34 @@ const busboy = require('busboy');
 
 module.exports.config = { api: { bodyParser: false } };
 
-function n(v) { return parseFloat(v) || 0; }
+function f(v) { return parseFloat(v) || 0; }
 
-function normSub(v) {
-  if (!v || String(v).trim() === '' || String(v) === 'nan') return '';
-  const s = String(v).trim();
-  if (s.includes('e') || s.includes('.')) {
-    try { return String(Math.round(parseFloat(s))); } catch(e) { return s; }
-  }
-  return s;
-}
+function str(v) { return (v === null || v === undefined) ? '' : String(v).trim(); }
 
-function sheetToRows(wb, hints) {
+function sheetByHint(wb, hints) {
   for (const name of wb.SheetNames) {
-    if (hints.some(h => name.toLowerCase().includes(h)))
+    if (hints.some(h => name.toLowerCase().includes(h.toLowerCase())))
       return XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
   }
   return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
 }
 
 function inferType(sku, name) {
-  const s = (sku+' '+name).toLowerCase();
+  const s = (sku + ' ' + name).toLowerCase();
   if (s.includes('liner')) return 'liner';
   if (s.includes('panty')) return 'panty';
   return 'pad';
 }
 
 function inferQty(sku) {
-  const m = sku.match(/[_\-](\d+)$/);  if (m) return parseInt(m[1]);
+  const m  = sku.match(/[_\-](\d+)$/); if (m)  return parseInt(m[1]);
   const m2 = sku.match(/(\d+)$/);       if (m2) return parseInt(m2[1]);
   return 1;
 }
 
 function parseMultipart(req) {
   return new Promise((resolve, reject) => {
-    const bb = busboy({ headers: req.headers, limits: { fileSize: 20*1024*1024 } });
+    const bb = busboy({ headers: req.headers, limits: { fileSize: 20 * 1024 * 1024 } });
     const fields = {}, files = {};
     bb.on('field', (name, val) => { fields[name] = val; });
     bb.on('file', (name, stream) => {
@@ -46,7 +39,7 @@ function parseMultipart(req) {
       stream.on('end', () => { files[name] = Buffer.concat(chunks); });
     });
     bb.on('finish', () => resolve({ fields, files }));
-    bb.on('error',  reject);
+    bb.on('error', reject);
     req.pipe(bb);
   });
 }
@@ -55,28 +48,26 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
-  if (req.method !== 'POST')    { res.status(405).json({ error: 'POST only' }); return; }
+  if (req.method !== 'POST')   { res.status(405).json({ error: 'POST only' }); return; }
 
   try {
     const { fields, files } = await parseMultipart(req);
+    if (!files.orders) return res.status(400).json({ error: 'Order Report file is required.' });
 
-    if (!files.orders) return res.status(400).json({ error: 'Order report file is required.' });
-
+    // ── User cost inputs ───────────────────────────────────────────────────
     const costs = {
-      pad:   n(fields.c_pad)   || 6,
-      liner: n(fields.c_liner) || 3,
-      panty: n(fields.c_panty) || 12,
-      pkg:   n(fields.c_pkg)   || 10,
-      misc:  n(fields.c_misc)  || 2,
+      pad:   f(fields.c_pad)   || 6,
+      liner: f(fields.c_liner) || 3,
+      panty: f(fields.c_panty) || 12,
+      pkg:   f(fields.c_pkg)   || 10,
+      misc:  f(fields.c_misc)  || 2,
     };
-
     const skuConfigs = JSON.parse(fields.skuConfigs || '[]');
     const cfgMap = {};
     skuConfigs.forEach(c => { cfgMap[c.sku] = c; });
 
-    function cogsForSku(sku, productName) {
+    function unitCOGS(sku, productName) {
       const cfg  = cfgMap[sku];
       const type = cfg ? cfg.type : inferType(sku, productName);
       const qty  = cfg ? cfg.qty  : inferQty(sku);
@@ -84,167 +75,278 @@ module.exports = async (req, res) => {
       return { cogs: (unit * qty) + costs.pkg + costs.misc, type, qty };
     }
 
-    const wb2 = XLSX.read(files.orders, { type: 'buffer' });
-    const wb1 = files.pl ? XLSX.read(files.pl, { type: 'buffer' }) : null;
+    // ── Read files ─────────────────────────────────────────────────────────
+    const wbOrders = XLSX.read(files.orders, { type: 'buffer' });
+    const wbPL     = files.pl ? XLSX.read(files.pl, { type: 'buffer' }) : null;
 
-    const orderRows    = sheetToRows(wb2, ['order','consolidate','comp']);
-    const chargesRows  = wb1 ? sheetToRows(wb1, ['commission','charges','marketing']) : [];
-    const nonOrderRows = wb1 ? sheetToRows(wb1, ['non order','non-order','nonorder','non_order']) : [];
+    // Order report: single sheet
+    const orderRows = sheetByHint(wbOrders, ['consolidate', 'order', 'comp']);
 
-    const skuMap = {}, invToSku = {}, subToSku = {}, subToInvAmt = {};
+    // P&L sheet rows (all optional — only available if P&L file uploaded)
+    const totalSubRows  = wbPL ? sheetByHint(wbPL, ['total_sub', 'total sub'])   : [];
+    const commRows      = wbPL ? sheetByHint(wbPL, ['commission and other', 'commission']) : [];
+    const nonOrderRows  = wbPL ? sheetByHint(wbPL, ['non order', 'non_order'])   : [];
+    const returnsRows   = wbPL ? sheetByHint(wbPL, ['returns'])                  : [];
+
+    // ── Pass 1: build sub→SKU map from order report ────────────────────────
+    const subToSKU  = {};   // suborder code → sku
+    const subToSP   = {};   // suborder code → selling price
+    const skuMeta   = {};   // sku → { productName, type, qty, cogs, sp }
 
     for (const o of orderRows) {
-      const sku    = String(o['SKU CODE'] || '').trim();
-      const inv    = String(o['INVOICE NUMBER'] || '').trim();
-      const sub    = normSub(o['SUBORDER CODE']);
-      const state  = String(o['CURRENT ORDER STATE'] || '').toLowerCase();
-      const sp     = n(o['SELLING PRICE']);
-      const invAmt = n(o['SELLER INVOICE AMOUNT']);
-      const name   = String(o['PRODUCT NAME'] || '');
-      const attr   = String(o['ATTRIBUTES'] || '');
-      if (!sku) continue;
-      if (inv) invToSku[inv] = sku;
-      if (sub) { subToSku[sub] = sku; subToInvAmt[sub] = invAmt; }
-      if (!skuMap[sku]) {
-        const { cogs, type, qty } = cogsForSku(sku, name);
-        skuMap[sku] = {
-          sku, productName: name, attr, sp, type, qty,
-          orders: 0, returned: 0,
-          unitCOGS: cogs, totalCOGS: 0,
-          totalInvoiceAmt: 0,
-          totalMarketingFee: 0, totalCourierFee: 0,
-          totalPaymentFee: 0,   totalIGST: 0,
-          totalWebAds: 0,
-          grossPayableDelivered: 0,
-          totalReturnReversal: 0,
-          totalTDS: 0, totalTCS: 0,
-          remoteOrders: 0, standardOrders: 0,
-        };
+      const sub  = str(o['SUBORDER CODE']);
+      const sku  = str(o['SKU CODE']);
+      const name = str(o['PRODUCT NAME']);
+      const sp   = f(o['SELLING PRICE']);
+      if (!sku || !sub) continue;
+
+      subToSKU[sub] = sku;
+      subToSP[sub]  = sp;
+
+      if (!skuMeta[sku]) {
+        const { cogs, type, qty } = unitCOGS(sku, name);
+        skuMeta[sku] = { productName: name, type, qty, cogs, sp };
       }
-      const s = skuMap[sku];
-      const isRet = state.includes('return');
-      const isCan = state.includes('cancel');
-      if (isRet)       { s.returned++; }
-      else if (!isCan) { s.orders++; s.totalCOGS += s.unitCOGS; }
     }
 
+    // ── Pass 2: per-suborder financial data from P&L sheets ───────────────
+    // sub_data[sub] = { invoiceAmt, commTotal, commMkt, commCourier, commPmt,
+    //                   commIGST, tdsInv, tdsDM, returnInv, returnComm }
+    const subData = {};
+
+    // A) Total_Suboders → invoice amount for each COD Vendor Invoice
+    for (const r of totalSubRows) {
+      const sub = str(r['Sub Order No']);
+      const tx  = str(r['Transaction Type']);
+      if (!sub || sub === 'nan') continue;
+      if (tx.includes('Vendor Invoice')) {
+        subData[sub] = subData[sub] || {};
+        subData[sub].invoiceAmt = f(r['Invoice Amount']);
+      }
+    }
+
+    // B) Commission sheet → per-order charges + returns + ad spend
     let totalAdSpend = 0;
 
-    for (const c of chargesRows) {
-      const tx    = String(c['Transaction Type'] || '').toLowerCase();
-      const sub   = normSub(c['Sub Order No']);
-      const inv   = String(c['Invoice Number'] || '').trim();
-      const total = n(c['Total Commission Amount']);
-      const mkt   = n(c['Marketing Fee']);
-      const cour  = n(c['Courier Fee']);
-      const pmt   = n(c['Payment Collection Fee']);
-      const igst  = n(c['Igst'] || c['IGST'] || 0);
+    for (const r of commRows) {
+      const sub = str(r['Sub Order No']);
+      const tx  = str(r['Transaction Type']);
+      if (!sub || sub === 'nan') continue;
 
-      if (tx.includes('advertise') || tx.includes('ads income')) {
-        totalAdSpend += Math.abs(total); continue;
+      // Ad spend: Advertise Ads Income + Web Ads Invoice (monthly totals, not per-sub)
+      if (tx.includes('Advertise Ads Income') || tx.includes('Web Ads Invoice')) {
+        totalAdSpend += f(r['Total Commission Amount']);
+        continue;
       }
 
-      const sku = subToSku[sub] || invToSku[inv];
+      // Skip zero-value entries
+      if (tx.includes('Stock Out') || tx.includes('RTO Charges')) continue;
 
-      if (tx.includes('vendor invoice')) {
-        if (!sku || !skuMap[sku]) continue;
-        const s      = skuMap[sku];
-        const invAmt = subToInvAmt[sub] || 0;
-        s.totalInvoiceAmt       += invAmt;
-        s.totalMarketingFee     += mkt;
-        s.totalCourierFee       += cour;
-        s.totalPaymentFee       += pmt;
-        s.totalIGST             += igst;
-        s.grossPayableDelivered += (invAmt + total);
-        if (Math.abs(cour) > 80) s.remoteOrders++;
-        else                     s.standardOrders++;
+      subData[sub] = subData[sub] || {};
+
+      if (tx.includes('COD Vendor Invoice')) {
+        // Snapdeal's cut on a delivered order (all negative)
+        subData[sub].commTotal   = f(r['Total Commission Amount']);
+        subData[sub].commMkt     = f(r['Marketing Fee']);
+        subData[sub].commCourier = f(r['Courier Fee']);
+        subData[sub].commPmt     = f(r['Payment Collection Fee']);
+        subData[sub].commIGST    = f(r['Igst'] || r['IGST'] || 0);
       }
 
-      if (tx.includes('web ads') || tx.includes('stock out')) {
-        if (!sku || !skuMap[sku]) continue;
-        skuMap[sku].totalWebAds           += total;
-        skuMap[sku].grossPayableDelivered += total;
-      }
-
-      if (tx.includes('return to vendor')) {
-        if (!sku || !skuMap[sku]) continue;
-        skuMap[sku].totalReturnReversal += Math.abs(total);
+      if (tx.includes('COD Return to Vendor')) {
+        // Commission reversal on a returned order (positive — Snapdeal gives back its cut)
+        subData[sub].returnComm    = f(r['Total Commission Amount']);
+        subData[sub].returnCourier = f(r['Courier Fee']);
       }
     }
 
+    // C) Non-Order Transactions → TDS INV (deducted on delivery) & TDS DM (credited on return)
     for (const r of nonOrderRows) {
-      const tx  = String(r['Transaction Type'] || '').toLowerCase();
-      const sub = normSub(r['Sub Order No']);
-      const amt = n(r['Gross Amount']);
-      if (!tx.includes('tds') && !tx.includes('tcs')) continue;
-      const sku = subToSku[sub];
-      if (!sku || !skuMap[sku]) continue;
-      if (tx.includes('tcs')) skuMap[sku].totalTCS += amt;
-      else                    skuMap[sku].totalTDS += amt;
+      const sub = str(r['Sub Order No']);
+      const tx  = str(r['Transaction Type']);
+      if (!sub || sub === 'nan') continue;
+      subData[sub] = subData[sub] || {};
+      if (tx.includes('TDS INV')) subData[sub].tdsInv = f(r['Gross Amount']); // negative
+      if (tx.includes('TDS DM'))  subData[sub].tdsDM  = f(r['Gross Amount']); // positive
     }
 
-    const skuList = Object.keys(skuMap);
-    const adShare = skuList.length > 0 ? totalAdSpend / skuList.length : 0;
+    // D) Returns sheet → invoice debit for returned orders (negative)
+    for (const r of returnsRows) {
+      const sub = str(r['Sub Order No']);
+      const tx  = str(r['Transaction Type']);
+      if (!sub || sub === 'nan') continue;
+      if (tx.includes('Return to Vendor')) {
+        subData[sub] = subData[sub] || {};
+        subData[sub].returnInv = f(r['Invoice Amount']); // negative
+      }
+    }
 
-    const FALLBACK_GROSS = 91.71;
+    // ── Pass 3: aggregate per SKU ──────────────────────────────────────────
+    const skuStats = {}; // sku → aggregated financials
 
-    const skus = Object.values(skuMap).map(s => {
-      const hasActual = s.grossPayableDelivered > 0;
+    function getSKUStat(sku, meta) {
+      if (!skuStats[sku]) {
+        const m = meta || skuMeta[sku] || { productName: 'Unknown', type: 'pad', qty: 1, cogs: costs.pkg + costs.misc, sp: 0 };
+        skuStats[sku] = {
+          sku,
+          productName: m.productName,
+          type: m.type,
+          qty: m.qty,
+          unitCOGS: m.cogs,
+          sp: m.sp,
+          // Delivered
+          deliveredCount: 0,
+          totalInvoiceAmt: 0,    // from Total_Suboders
+          totalCommission: 0,    // from Commission (negative)
+          totalTDSInv: 0,        // from Non-Order TDS INV (negative)
+          netDelivered: 0,       // invoiceAmt + commission + tdsInv per delivered sub
+          // Returns this month (including prior-month orders returned this month)
+          returnedCount: 0,
+          totalReturnInv: 0,     // from Returns sheet (negative)
+          totalReturnComm: 0,    // commission reversal (positive)
+          totalTDSDM: 0,         // TDS debit memo (positive)
+          netReturns: 0,         // returnInv + returnComm + tdsDM per return sub
+          // COGS & ads allocated after
+          totalCOGS: 0,
+          adShare: 0,
+          grossProfit: 0,
+          // Per-order breakdown
+          orders: [],            // per-order detail rows
+        };
+      }
+      return skuStats[sku];
+    }
 
-      const grossPayableDelivered = hasActual ? s.grossPayableDelivered : s.orders * FALLBACK_GROSS;
-      const grossPayableNet       = grossPayableDelivered - s.totalReturnReversal;
-      const totalTaxDeductions    = s.totalTDS + s.totalTCS;
-      const netSellerPayable      = grossPayableNet + totalTaxDeductions;
-      const grossProfit           = netSellerPayable - adShare - s.totalCOGS;
+    // Process each suborder
+    for (const [sub, d] of Object.entries(subData)) {
+      const sku  = subToSKU[sub];
+      const isDelivered = (d.invoiceAmt || 0) > 0;
+      const isReturn    = (d.returnInv  || 0) < 0;
 
-      const totalAttempts  = s.orders + s.returned;
-      const returnRate     = totalAttempts > 0 ? s.returned / totalAttempts * 100 : 0;
-      const potentialRev   = s.sp * s.orders;
-      const grossMarginPct = potentialRev > 0 ? grossProfit / potentialRev * 100 : 0;
-      const profitPerUnit  = s.orders > 0 ? grossProfit / s.orders : 0;
+      if (!isDelivered && !isReturn) continue; // skip zero-impact rows
 
-      const avgGrossPayable = s.orders > 0 ? grossPayableDelivered / s.orders : FALLBACK_GROSS;
-      const avgCutPerOrder  = s.sp - avgGrossPayable;
-      const avgTDSPerOrder  = s.orders > 0 ? totalTaxDeductions / s.orders : 0;
-      const avgNetPerOrder  = avgGrossPayable + avgTDSPerOrder;
-      const avgMarketingFee = s.orders > 0 ? s.totalMarketingFee / s.orders : 0;
-      const avgCourierFee   = s.orders > 0 ? s.totalCourierFee   / s.orders : 0;
-      const avgPaymentFee   = s.orders > 0 ? s.totalPaymentFee   / s.orders : 0;
-      const avgIGST         = s.orders > 0 ? s.totalIGST         / s.orders : 0;
-      const avgWebAds       = s.orders > 0 ? s.totalWebAds       / s.orders : 0;
+      // For returned subs not in order report, we still record financial impact
+      // under 'PRIOR_RETURNS' bucket if SKU unknown
+      const effectiveSKU = sku || 'PRIOR_MONTH_RETURNS';
 
-      const avgReturnReversal = s.returned > 0 ? s.totalReturnReversal / s.returned : avgGrossPayable;
-      const returnLossPerUnit = avgReturnReversal + s.unitCOGS;
-      const totalReturnLoss   = s.returned * returnLossPerUnit;
+      const stat = getSKUStat(effectiveSKU, skuMeta[sku]);
+      const sp   = subToSP[sub] || stat.sp || 0;
 
-      return {
-        sku: s.sku, productName: s.productName, attr: s.attr, sp: s.sp,
-        type: s.type, qty: s.qty, unitCOGS: s.unitCOGS,
-        orders: s.orders, returned: s.returned, totalAttempts,
-        returnRate, potentialRev, hasActual,
-        remoteOrders: s.remoteOrders, standardOrders: s.standardOrders,
-        totalInvoiceAmt: s.totalInvoiceAmt,
-        totalMarketingFee: s.totalMarketingFee,
-        totalCourierFee: s.totalCourierFee,
-        totalPaymentFee: s.totalPaymentFee,
-        totalIGST: s.totalIGST,
-        totalWebAds: s.totalWebAds,
-        grossPayableDelivered, totalReturnReversal: s.totalReturnReversal, grossPayableNet,
-        totalTDS: s.totalTDS, totalTCS: s.totalTCS, totalTaxDeductions, netSellerPayable,
-        totalCOGS: s.totalCOGS, adShare, grossProfit, grossMarginPct, profitPerUnit,
-        returnLossPerUnit, totalReturnLoss,
-        avgGrossPayable, avgCutPerOrder, avgTDSPerOrder, avgNetPerOrder,
-        avgMarketingFee, avgCourierFee, avgPaymentFee, avgIGST, avgWebAds,
-        NET_PER_ORDER: avgNetPerOrder,
-        totalSnapNet: netSellerPayable,
-        totalSnapCut: s.orders * avgCutPerOrder,
-      };
+      if (isDelivered && !isReturn) {
+        // Pure delivered order
+        const invAmt  = d.invoiceAmt  || 0;
+        const comm    = d.commTotal   || 0;
+        const tdsInv  = d.tdsInv      || 0;
+        const net     = invAmt + comm + tdsInv;
+
+        stat.deliveredCount++;
+        stat.totalInvoiceAmt += invAmt;
+        stat.totalCommission += comm;
+        stat.totalTDSInv     += tdsInv;
+        stat.netDelivered    += net;
+        stat.orders.push({
+          sub, sku: effectiveSKU, sp,
+          invoiceAmt: invAmt, commission: comm, tdsInv, net,
+          type: 'delivered',
+          courier: d.commCourier || 0,
+          mkt: d.commMkt || 0,
+          pmt: d.commPmt || 0,
+          igst: d.commIGST || 0,
+        });
+      }
+
+      if (isDelivered && isReturn) {
+        // Order that was delivered in this month AND returned in this month
+        // Net on invoice side = 0 (charged then reversed), but COGS + return loss apply
+        const invAmt     = d.invoiceAmt  || 0;
+        const comm       = d.commTotal   || 0;
+        const tdsInv     = d.tdsInv      || 0;
+        const retInv     = d.returnInv   || 0;
+        const retComm    = d.returnComm  || 0;
+        const tdsDM      = d.tdsDM       || 0;
+        const netDel     = invAmt + comm + tdsInv;         // ~0 or small
+        const netRet     = retInv + retComm + tdsDM;       // negative
+        const net        = netDel + netRet;
+
+        // Count as delivered (COGS applies) AND returned
+        stat.deliveredCount++;
+        stat.totalInvoiceAmt += invAmt;
+        stat.totalCommission += comm;
+        stat.totalTDSInv     += tdsInv;
+        stat.netDelivered    += netDel;
+        stat.returnedCount++;
+        stat.totalReturnInv  += retInv;
+        stat.totalReturnComm += retComm;
+        stat.totalTDSDM      += tdsDM;
+        stat.netReturns      += netRet;
+        stat.orders.push({
+          sub, sku: effectiveSKU, sp,
+          invoiceAmt: invAmt, commission: comm, tdsInv,
+          returnInv: retInv, returnComm: retComm, tdsDM, net,
+          type: 'delivered_and_returned',
+          courier: d.commCourier || 0,
+        });
+      }
+
+      if (!isDelivered && isReturn) {
+        // Return for a prior-month order — no delivery invoice this month
+        const retInv  = d.returnInv  || 0;
+        const retComm = d.returnComm || 0;
+        const tdsDM   = d.tdsDM      || 0;
+        const net     = retInv + retComm + tdsDM;
+
+        stat.returnedCount++;
+        stat.totalReturnInv  += retInv;
+        stat.totalReturnComm += retComm;
+        stat.totalTDSDM      += tdsDM;
+        stat.netReturns      += net;
+        stat.orders.push({
+          sub, sku: effectiveSKU, sp: 0,
+          returnInv: retInv, returnComm: retComm, tdsDM, net,
+          type: 'return_only',
+        });
+      }
+    }
+
+    // ── Pass 4: allocate COGS & ad spend, compute gross profit ────────────
+    const totalDelivered = Object.values(skuStats)
+      .filter(s => s.sku !== 'PRIOR_MONTH_RETURNS')
+      .reduce((sum, s) => sum + s.deliveredCount, 0);
+
+    for (const stat of Object.values(skuStats)) {
+      stat.totalCOGS = stat.deliveredCount * stat.unitCOGS;
+      stat.adShare   = totalDelivered > 0
+        ? totalAdSpend * (stat.deliveredCount / totalDelivered)
+        : 0;
+      // gross profit = net received from Snapdeal (delivered + returns) - COGS + ad allocation
+      stat.grossProfit = stat.netDelivered + stat.netReturns - stat.totalCOGS + stat.adShare;
+      stat.grossMarginPct = stat.netDelivered > 0
+        ? (stat.grossProfit / (stat.sp * stat.deliveredCount || stat.netDelivered)) * 100
+        : 0;
+      stat.profitPerUnit = stat.deliveredCount > 0
+        ? stat.grossProfit / stat.deliveredCount
+        : 0;
+      stat.avgNetPerOrder = stat.deliveredCount > 0
+        ? stat.netDelivered / stat.deliveredCount
+        : 0;
+      stat.returnRate = (stat.deliveredCount + stat.returnedCount) > 0
+        ? stat.returnedCount / (stat.deliveredCount + stat.returnedCount) * 100
+        : 0;
+    }
+
+    const skus = Object.values(skuStats);
+
+    res.json({
+      skus,
+      totalAdSpend,
+      totalDelivered,
+      detectedSKUs: Object.keys(skuMeta).map(k => ({
+        sku: k,
+        productName: skuMeta[k].productName,
+        type: skuMeta[k].type,
+        qty: skuMeta[k].qty,
+      })),
     });
-
-    res.json({ skus, totalAdSpend, detectedSKUs: skuList.map(k => ({
-      sku: skuMap[k].sku, productName: skuMap[k].productName,
-      type: skuMap[k].type, qty: skuMap[k].qty,
-    }))});
 
   } catch (err) {
     console.error(err);
