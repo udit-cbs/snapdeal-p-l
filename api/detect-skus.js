@@ -11,11 +11,11 @@ module.exports = async (req, res) => {
   try {
     const buf  = await parseFile(req, 'orders');
     const wb   = XLSX.read(buf, { type: 'buffer' });
-    const rows = sheetToRows(wb, ['order','consolidate','comp']);
+    const rows = sheetByHint(wb, ['consolidate', 'order', 'comp']);
     const seen = {}, skus = [];
     for (const o of rows) {
-      const sku  = String(o['SKU CODE'] || '').trim();
-      const name = String(o['PRODUCT NAME'] || '').trim();
+      const sku  = str(o['SKU CODE']);
+      const name = str(o['PRODUCT NAME']);
       if (!sku || seen[sku]) continue;
       seen[sku] = true;
       skus.push({ sku, productName: name, type: inferType(sku, name), qty: inferQty(sku) });
@@ -28,7 +28,7 @@ module.exports = async (req, res) => {
 
 function parseFile(req, fieldName) {
   return new Promise((resolve, reject) => {
-    const bb = busboy({ headers: req.headers, limits: { fileSize: 20*1024*1024 } });
+    const bb = busboy({ headers: req.headers, limits: { fileSize: 20 * 1024 * 1024 } });
     let found = false;
     bb.on('file', (name, stream) => {
       if (name !== fieldName) { stream.resume(); return; }
@@ -43,15 +43,16 @@ function parseFile(req, fieldName) {
   });
 }
 
-function sheetToRows(wb, hints) {
+function sheetByHint(wb, hints) {
   for (const name of wb.SheetNames) {
-    if (hints.some(h => name.toLowerCase().includes(h)))
+    if (hints.some(h => name.toLowerCase().includes(h.toLowerCase())))
       return XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' });
   }
   return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
 }
+function str(v) { return (v === null || v === undefined) ? '' : String(v).trim(); }
 function inferType(sku, name) {
-  const s = (sku+' '+name).toLowerCase();
+  const s = (sku + ' ' + name).toLowerCase();
   if (s.includes('liner')) return 'liner';
   if (s.includes('panty')) return 'panty';
   return 'pad';
