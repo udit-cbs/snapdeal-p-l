@@ -1,6 +1,9 @@
 const XLSX   = require('xlsx');
 const busboy = require('busboy');
 
+// ── CRITICAL: tell Vercel NOT to parse the body — busboy does it ──────────
+module.exports.config = { api: { bodyParser: false } };
+
 // ── helpers ────────────────────────────────────────────────────────────────
 function n(v) { return parseFloat(v) || 0; }
 
@@ -55,7 +58,7 @@ function parseMultipart(req) {
 }
 
 // ── main handler ───────────────────────────────────────────────────────────
-module.exports = async (req, res) => {
+async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -116,16 +119,13 @@ module.exports = async (req, res) => {
           sku, productName: name, attr, sp, type, qty,
           orders: 0, returned: 0,
           unitCOGS: cogs, totalCOGS: 0,
-          // Stage 1
           totalInvoiceAmt: 0,
           totalMarketingFee: 0, totalCourierFee: 0,
           totalPaymentFee: 0,   totalIGST: 0,
           totalWebAds: 0,
           grossPayableDelivered: 0,
           totalReturnReversal: 0,
-          // Stage 2
           totalTDS: 0, totalTCS: 0,
-          // zone
           remoteOrders: 0, standardOrders: 0,
         };
       }
@@ -171,7 +171,7 @@ module.exports = async (req, res) => {
 
       if (tx.includes('web ads') || tx.includes('stock out')) {
         if (!sku || !skuMap[sku]) continue;
-        skuMap[sku].totalWebAds         += total;
+        skuMap[sku].totalWebAds           += total;
         skuMap[sku].grossPayableDelivered += total;
       }
 
@@ -203,25 +203,20 @@ module.exports = async (req, res) => {
     const skus = Object.values(skuMap).map(s => {
       const hasActual = s.grossPayableDelivered > 0;
 
-      // Stage 1
       const grossPayableDelivered = hasActual ? s.grossPayableDelivered : s.orders * FALLBACK_GROSS;
       const grossPayableNet       = grossPayableDelivered - s.totalReturnReversal;
 
-      // Stage 2
       const totalTaxDeductions = s.totalTDS + s.totalTCS;
       const netSellerPayable   = grossPayableNet + totalTaxDeductions;
 
-      // Stage 3
       const grossProfit = netSellerPayable - adShare - s.totalCOGS;
 
-      // Metrics
       const totalAttempts  = s.orders + s.returned;
       const returnRate     = totalAttempts > 0 ? s.returned / totalAttempts * 100 : 0;
       const potentialRev   = s.sp * s.orders;
       const grossMarginPct = potentialRev > 0 ? grossProfit / potentialRev * 100 : 0;
       const profitPerUnit  = s.orders > 0 ? grossProfit / s.orders : 0;
 
-      // Per-order averages
       const avgGrossPayable = s.orders > 0 ? grossPayableDelivered / s.orders : FALLBACK_GROSS;
       const avgCutPerOrder  = s.sp - avgGrossPayable;
       const avgTDSPerOrder  = s.orders > 0 ? totalTaxDeductions / s.orders : 0;
@@ -242,7 +237,6 @@ module.exports = async (req, res) => {
         orders: s.orders, returned: s.returned, totalAttempts,
         returnRate, potentialRev, hasActual,
         remoteOrders: s.remoteOrders, standardOrders: s.standardOrders,
-        // Stage 1
         totalInvoiceAmt:    s.totalInvoiceAmt,
         totalMarketingFee:  s.totalMarketingFee,
         totalCourierFee:    s.totalCourierFee,
@@ -250,33 +244,27 @@ module.exports = async (req, res) => {
         totalIGST:          s.totalIGST,
         totalWebAds:        s.totalWebAds,
         grossPayableDelivered, totalReturnReversal: s.totalReturnReversal, grossPayableNet,
-        // Stage 2
         totalTDS: s.totalTDS, totalTCS: s.totalTCS, totalTaxDeductions, netSellerPayable,
-        // Stage 3
         totalCOGS: s.totalCOGS, adShare, grossProfit, grossMarginPct, profitPerUnit,
-        // Return
         returnLossPerUnit, totalReturnLoss,
-        // Per-order averages
         avgGrossPayable, avgCutPerOrder, avgTDSPerOrder, avgNetPerOrder,
         avgMarketingFee, avgCourierFee, avgPaymentFee, avgIGST, avgWebAds,
-        // Aliases for frontend
         NET_PER_ORDER: avgNetPerOrder,
         totalSnapNet: netSellerPayable,
         totalSnapCut: s.orders * avgCutPerOrder,
       };
     });
 
-    res.json({
-      skus,
-      totalAdSpend,
-      detectedSKUs: skuList.map(k => ({
-        sku: skuMap[k].sku, productName: skuMap[k].productName,
-        type: skuMap[k].type, qty: skuMap[k].qty,
-      }))
-    });
+    res.json({ skus, totalAdSpend, detectedSKUs: skuList.map(k => ({
+      sku: skuMap[k].sku, productName: skuMap[k].productName,
+      type: skuMap[k].type, qty: skuMap[k].qty,
+    }))});
 
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
-};
+}
+
+module.exports = handler;
+module.exports.config = { api: { bodyParser: false } };
