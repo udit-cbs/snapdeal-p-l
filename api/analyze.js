@@ -4,7 +4,6 @@ const busboy = require('busboy');
 module.exports.config = { api: { bodyParser: false } };
 
 function f(v) { return parseFloat(v) || 0; }
-
 function str(v) { return (v === null || v === undefined) ? '' : String(v).trim(); }
 
 function sheetByHint(wb, hints) {
@@ -55,7 +54,6 @@ module.exports = async (req, res) => {
     const { fields, files } = await parseMultipart(req);
     if (!files.orders) return res.status(400).json({ error: 'Order Report file is required.' });
 
-    // ── User cost inputs ───────────────────────────────────────────────────
     const costs = {
       pad:   f(fields.c_pad)   || 6,
       liner: f(fields.c_liner) || 3,
@@ -67,7 +65,7 @@ module.exports = async (req, res) => {
     const cfgMap = {};
     skuConfigs.forEach(c => { cfgMap[c.sku] = c; });
 
-    function unitCOGS(sku, productName) {
+    function calcUnitCOGS(sku, productName) {
       const cfg  = cfgMap[sku];
       const type = cfg ? cfg.type : inferType(sku, productName);
       const qty  = cfg ? cfg.qty  : inferQty(sku);
@@ -79,19 +77,14 @@ module.exports = async (req, res) => {
     const wbOrders = XLSX.read(files.orders, { type: 'buffer' });
     const wbPL     = files.pl ? XLSX.read(files.pl, { type: 'buffer' }) : null;
 
-    // Order report: single sheet
-    const orderRows = sheetByHint(wbOrders, ['consolidate', 'order', 'comp']);
-
-    // P&L sheet rows (all optional — only available if P&L file uploaded)
-    const totalSubRows  = wbPL ? sheetByHint(wbPL, ['total_sub', 'total sub'])   : [];
+    const orderRows     = sheetByHint(wbOrders, ['consolidate', 'order', 'comp']);
+    const totalSubRows  = wbPL ? sheetByHint(wbPL, ['total_sub', 'total sub'])            : [];
     const commRows      = wbPL ? sheetByHint(wbPL, ['commission and other', 'commission']) : [];
-    const nonOrderRows  = wbPL ? sheetByHint(wbPL, ['non order', 'non_order'])   : [];
-    const returnsRows   = wbPL ? sheetByHint(wbPL, ['returns'])                  : [];
+    const nonOrderRows  = wbPL ? sheetByHint(wbPL, ['non order', 'non_order'])             : [];
+    const returnsRows   = wbPL ? sheetByHint(wbPL, ['returns'])                            : [];
 
-    // ── Pass 1: build sub→SKU map from order report ────────────────────────
-    const subToSKU  = {};   // suborder code → sku
-    const subToSP   = {};   // suborder code → selling price
-    const skuMeta   = {};   // sku → { productName, type, qty, cogs, sp }
+    // ── Pass 1: sub→SKU from order report ──────────────────────────────────
+    const subToSKU = {}, subToSP = {}, skuMeta = {};
 
     for (const o of orderRows) {
       const sub  = str(o['SUBORDER CODE']);
@@ -99,22 +92,19 @@ module.exports = async (req, res) => {
       const name = str(o['PRODUCT NAME']);
       const sp   = f(o['SELLING PRICE']);
       if (!sku || !sub) continue;
-
       subToSKU[sub] = sku;
       subToSP[sub]  = sp;
-
       if (!skuMeta[sku]) {
-        const { cogs, type, qty } = unitCOGS(sku, name);
-        skuMeta[sku] = { productName: name, type, qty, cogs, sp };
+        const { cogs, type, qty } = calcUnitCOGS(sku, name);
+        skuMeta[sku] = { productName: name, attr: str(o['ATTRIBUTES']), type, qty, cogs, sp };
       }
     }
 
-    // ── Pass 2: per-suborder financial data from P&L sheets ───────────────
-    // sub_data[sub] = { invoiceAmt, commTotal, commMkt, commCourier, commPmt,
-    //                   commIGST, tdsInv, tdsDM, returnInv, returnComm }
+    // ── Pass 2: financial data from P&L sheets ─────────────────────────────
+    // subData[sub] = per-suborder financial breakdown
     const subData = {};
 
-    // A) Total_Suboders → invoice amount for each COD Vendor Invoice
+    // A) Total_Suboders → invoice amount
     for (const r of totalSubRows) {
       const sub = str(r['Sub Order No']);
       const tx  = str(r['Transaction Type']);
@@ -125,42 +115,34 @@ module.exports = async (req, res) => {
       }
     }
 
-    // B) Commission sheet → per-order charges + returns + ad spend
+    // B) Commission sheet
     let totalAdSpend = 0;
-
     for (const r of commRows) {
       const sub = str(r['Sub Order No']);
       const tx  = str(r['Transaction Type']);
       if (!sub || sub === 'nan') continue;
 
-      // Ad spend: Advertise Ads Income + Web Ads Invoice (monthly totals, not per-sub)
       if (tx.includes('Advertise Ads Income') || tx.includes('Web Ads Invoice')) {
         totalAdSpend += f(r['Total Commission Amount']);
         continue;
       }
-
-      // Skip zero-value entries
       if (tx.includes('Stock Out') || tx.includes('RTO Charges')) continue;
 
       subData[sub] = subData[sub] || {};
-
       if (tx.includes('COD Vendor Invoice')) {
-        // Snapdeal's cut on a delivered order (all negative)
         subData[sub].commTotal   = f(r['Total Commission Amount']);
         subData[sub].commMkt     = f(r['Marketing Fee']);
         subData[sub].commCourier = f(r['Courier Fee']);
         subData[sub].commPmt     = f(r['Payment Collection Fee']);
         subData[sub].commIGST    = f(r['Igst'] || r['IGST'] || 0);
       }
-
       if (tx.includes('COD Return to Vendor')) {
-        // Commission reversal on a returned order (positive — Snapdeal gives back its cut)
-        subData[sub].returnComm    = f(r['Total Commission Amount']);
+        subData[sub].returnComm    = f(r['Total Commission Amount']); // positive reversal
         subData[sub].returnCourier = f(r['Courier Fee']);
       }
     }
 
-    // C) Non-Order Transactions → TDS INV (deducted on delivery) & TDS DM (credited on return)
+    // C) Non-Order Transactions → TDS
     for (const r of nonOrderRows) {
       const sub = str(r['Sub Order No']);
       const tx  = str(r['Transaction Type']);
@@ -170,7 +152,7 @@ module.exports = async (req, res) => {
       if (tx.includes('TDS DM'))  subData[sub].tdsDM  = f(r['Gross Amount']); // positive
     }
 
-    // D) Returns sheet → invoice debit for returned orders (negative)
+    // D) Returns sheet → debit invoice for returned orders
     for (const r of returnsRows) {
       const sub = str(r['Sub Order No']);
       const tx  = str(r['Transaction Type']);
@@ -181,163 +163,168 @@ module.exports = async (req, res) => {
       }
     }
 
-    // ── Pass 3: aggregate per SKU ──────────────────────────────────────────
-    const skuStats = {}; // sku → aggregated financials
+    // ── Pass 3: aggregate into per-SKU stats ──────────────────────────────
+    // We build stats with the EXACT field names the frontend expects
+    const skuStats = {};
 
-    function getSKUStat(sku, meta) {
-      if (!skuStats[sku]) {
-        const m = meta || skuMeta[sku] || { productName: 'Unknown', type: 'pad', qty: 1, cogs: costs.pkg + costs.misc, sp: 0 };
-        skuStats[sku] = {
-          sku,
-          productName: m.productName,
-          type: m.type,
-          qty: m.qty,
-          unitCOGS: m.cogs,
-          sp: m.sp,
-          // Delivered
-          deliveredCount: 0,
-          totalInvoiceAmt: 0,    // from Total_Suboders
-          totalCommission: 0,    // from Commission (negative)
-          totalTDSInv: 0,        // from Non-Order TDS INV (negative)
-          netDelivered: 0,       // invoiceAmt + commission + tdsInv per delivered sub
-          // Returns this month (including prior-month orders returned this month)
-          returnedCount: 0,
-          totalReturnInv: 0,     // from Returns sheet (negative)
-          totalReturnComm: 0,    // commission reversal (positive)
-          totalTDSDM: 0,         // TDS debit memo (positive)
-          netReturns: 0,         // returnInv + returnComm + tdsDM per return sub
-          // COGS & ads allocated after
-          totalCOGS: 0,
-          adShare: 0,
-          grossProfit: 0,
-          // Per-order breakdown
-          orders: [],            // per-order detail rows
-        };
-      }
-      return skuStats[sku];
+    function initSKU(sku) {
+      const m = skuMeta[sku] || { productName: 'Unknown', attr: '', type: 'pad', qty: 1, cogs: costs.pkg + costs.misc, sp: 0 };
+      skuStats[sku] = {
+        sku,
+        productName: m.productName,
+        attr: m.attr,
+        sp: m.sp,
+        type: m.type,
+        qty: m.qty,
+        unitCOGS: m.cogs,
+        // Order counts
+        orders: 0,          // delivered (has invoice)
+        returned: 0,        // returned this month
+        totalAttempts: 0,
+        // Stage 1 — Gross Seller Payable
+        totalInvoiceAmt: 0,
+        totalMarketingFee: 0,
+        totalCourierFee: 0,
+        totalPaymentFee: 0,
+        totalIGST: 0,
+        totalWebAds: 0,     // web ads per-order charges (not bulk ad spend)
+        grossPayableDelivered: 0,
+        totalReturnReversal: 0,  // absolute value of what was clawed back
+        grossPayableNet: 0,
+        // Stage 2
+        totalTDS: 0,
+        totalTCS: 0,
+        netSellerPayable: 0,
+        // Stage 3
+        totalCOGS: 0,
+        adShare: 0,
+        grossProfit: 0,
+        grossMarginPct: 0,
+        profitPerUnit: 0,
+        // Return economics
+        returnLossPerUnit: 0,
+        totalReturnLoss: 0,
+        // Per-order averages
+        avgGrossPayable: 0,
+        avgCutPerOrder: 0,
+        avgTDSPerOrder: 0,
+        avgNetPerOrder: 0,
+        avgMarketingFee: 0,
+        avgCourierFee: 0,
+        avgPaymentFee: 0,
+        avgIGST: 0,
+        avgWebAds: 0,
+        // Zone
+        remoteOrders: 0,
+        standardOrders: 0,
+        // Aliases
+        potentialRev: 0,
+        totalSnapCut: 0,
+        NET_PER_ORDER: 0,
+        totalSnapNet: 0,
+      };
     }
 
-    // Process each suborder
     for (const [sub, d] of Object.entries(subData)) {
-      const sku  = subToSKU[sub];
-      const isDelivered = (d.invoiceAmt || 0) > 0;
-      const isReturn    = (d.returnInv  || 0) < 0;
+      const sku = subToSKU[sub] || 'PRIOR_MONTH_RETURNS';
+      if (!skuStats[sku]) initSKU(sku);
+      const s = skuStats[sku];
 
-      if (!isDelivered && !isReturn) continue; // skip zero-impact rows
+      const invAmt     = d.invoiceAmt   || 0;
+      const commTotal  = d.commTotal    || 0;
+      const commMkt    = d.commMkt      || 0;
+      const commCourier= d.commCourier  || 0;
+      const commPmt    = d.commPmt      || 0;
+      const commIGST   = d.commIGST     || 0;
+      const tdsInv     = d.tdsInv       || 0;
+      const returnInv  = d.returnInv    || 0;
+      const returnComm = d.returnComm   || 0;
+      const tdsDM      = d.tdsDM        || 0;
 
-      // For returned subs not in order report, we still record financial impact
-      // under 'PRIOR_RETURNS' bucket if SKU unknown
-      const effectiveSKU = sku || 'PRIOR_MONTH_RETURNS';
+      const isDelivered = invAmt > 0;
+      const isReturn    = returnInv < 0;
 
-      const stat = getSKUStat(effectiveSKU, skuMeta[sku]);
-      const sp   = subToSP[sub] || stat.sp || 0;
-
-      if (isDelivered && !isReturn) {
-        // Pure delivered order
-        const invAmt  = d.invoiceAmt  || 0;
-        const comm    = d.commTotal   || 0;
-        const tdsInv  = d.tdsInv      || 0;
-        const net     = invAmt + comm + tdsInv;
-
-        stat.deliveredCount++;
-        stat.totalInvoiceAmt += invAmt;
-        stat.totalCommission += comm;
-        stat.totalTDSInv     += tdsInv;
-        stat.netDelivered    += net;
-        stat.orders.push({
-          sub, sku: effectiveSKU, sp,
-          invoiceAmt: invAmt, commission: comm, tdsInv, net,
-          type: 'delivered',
-          courier: d.commCourier || 0,
-          mkt: d.commMkt || 0,
-          pmt: d.commPmt || 0,
-          igst: d.commIGST || 0,
-        });
+      if (isDelivered) {
+        // Net = invoice + commission (neg) + TDS INV (neg)
+        const grossPayable = invAmt + commTotal + tdsInv;
+        s.orders++;
+        s.totalInvoiceAmt    += invAmt;
+        s.totalMarketingFee  += commMkt;
+        s.totalCourierFee    += commCourier;
+        s.totalPaymentFee    += commPmt;
+        s.totalIGST          += commIGST;
+        s.grossPayableDelivered += grossPayable;
+        s.totalTDS           += tdsInv;
+        // Zone classification: courier > -80 means remote
+        if (Math.abs(commCourier) > 80) s.remoteOrders++;
+        else s.standardOrders++;
       }
 
-      if (isDelivered && isReturn) {
-        // Order that was delivered in this month AND returned in this month
-        // Net on invoice side = 0 (charged then reversed), but COGS + return loss apply
-        const invAmt     = d.invoiceAmt  || 0;
-        const comm       = d.commTotal   || 0;
-        const tdsInv     = d.tdsInv      || 0;
-        const retInv     = d.returnInv   || 0;
-        const retComm    = d.returnComm  || 0;
-        const tdsDM      = d.tdsDM       || 0;
-        const netDel     = invAmt + comm + tdsInv;         // ~0 or small
-        const netRet     = retInv + retComm + tdsDM;       // negative
-        const net        = netDel + netRet;
-
-        // Count as delivered (COGS applies) AND returned
-        stat.deliveredCount++;
-        stat.totalInvoiceAmt += invAmt;
-        stat.totalCommission += comm;
-        stat.totalTDSInv     += tdsInv;
-        stat.netDelivered    += netDel;
-        stat.returnedCount++;
-        stat.totalReturnInv  += retInv;
-        stat.totalReturnComm += retComm;
-        stat.totalTDSDM      += tdsDM;
-        stat.netReturns      += netRet;
-        stat.orders.push({
-          sub, sku: effectiveSKU, sp,
-          invoiceAmt: invAmt, commission: comm, tdsInv,
-          returnInv: retInv, returnComm: retComm, tdsDM, net,
-          type: 'delivered_and_returned',
-          courier: d.commCourier || 0,
-        });
-      }
-
-      if (!isDelivered && isReturn) {
-        // Return for a prior-month order — no delivery invoice this month
-        const retInv  = d.returnInv  || 0;
-        const retComm = d.returnComm || 0;
-        const tdsDM   = d.tdsDM      || 0;
-        const net     = retInv + retComm + tdsDM;
-
-        stat.returnedCount++;
-        stat.totalReturnInv  += retInv;
-        stat.totalReturnComm += retComm;
-        stat.totalTDSDM      += tdsDM;
-        stat.netReturns      += net;
-        stat.orders.push({
-          sub, sku: effectiveSKU, sp: 0,
-          returnInv: retInv, returnComm: retComm, tdsDM, net,
-          type: 'return_only',
-        });
+      if (isReturn) {
+        // Return net = returnInv (neg) + returnComm (pos reversal) + tdsDM (pos)
+        const returnNet = returnInv + returnComm + tdsDM;
+        s.returned++;
+        s.totalReturnReversal += Math.abs(returnNet); // store as positive loss magnitude
+        s.totalTDS += tdsDM; // TDS DM is a credit (positive), add to TDS bucket
       }
     }
 
-    // ── Pass 4: allocate COGS & ad spend, compute gross profit ────────────
+    // ── Pass 4: compute derived fields per SKU ────────────────────────────
     const totalDelivered = Object.values(skuStats)
       .filter(s => s.sku !== 'PRIOR_MONTH_RETURNS')
-      .reduce((sum, s) => sum + s.deliveredCount, 0);
+      .reduce((sum, s) => sum + s.orders, 0);
 
-    for (const stat of Object.values(skuStats)) {
-      stat.totalCOGS = stat.deliveredCount * stat.unitCOGS;
-      stat.adShare   = totalDelivered > 0
-        ? totalAdSpend * (stat.deliveredCount / totalDelivered)
+    for (const s of Object.values(skuStats)) {
+      // Gross payable net = delivered gross payable − return reversals
+      s.grossPayableNet = s.grossPayableDelivered - s.totalReturnReversal;
+
+      // Stage 2: TCS (not in this data but keep field)
+      s.netSellerPayable = s.grossPayableNet + s.totalTCS;
+
+      // Stage 3
+      s.totalCOGS  = s.orders * s.unitCOGS;
+      s.adShare    = totalDelivered > 0
+        ? totalAdSpend * (s.orders / totalDelivered)
         : 0;
-      // gross profit = net received from Snapdeal (delivered + returns) - COGS + ad allocation
-      stat.grossProfit = stat.netDelivered + stat.netReturns - stat.totalCOGS + stat.adShare;
-      stat.grossMarginPct = stat.netDelivered > 0
-        ? (stat.grossProfit / (stat.sp * stat.deliveredCount || stat.netDelivered)) * 100
+      s.grossProfit = s.netSellerPayable - s.totalCOGS + s.adShare; // adShare is negative
+
+      // Potential revenue (SP × delivered)
+      s.potentialRev = s.sp * s.orders;
+      s.grossMarginPct = s.potentialRev > 0
+        ? (s.grossProfit / s.potentialRev) * 100
         : 0;
-      stat.profitPerUnit = stat.deliveredCount > 0
-        ? stat.grossProfit / stat.deliveredCount
+      s.profitPerUnit = s.orders > 0 ? s.grossProfit / s.orders : 0;
+
+      // Counts
+      s.totalAttempts = s.orders + s.returned;
+      s.returnRate    = s.totalAttempts > 0
+        ? (s.returned / s.totalAttempts) * 100
         : 0;
-      stat.avgNetPerOrder = stat.deliveredCount > 0
-        ? stat.netDelivered / stat.deliveredCount
-        : 0;
-      stat.returnRate = (stat.deliveredCount + stat.returnedCount) > 0
-        ? stat.returnedCount / (stat.deliveredCount + stat.returnedCount) * 100
-        : 0;
+
+      // Per-order averages
+      s.avgGrossPayable = s.orders > 0 ? s.grossPayableDelivered / s.orders : 0;
+      s.avgTDSPerOrder  = s.orders > 0 ? s.totalTDS / s.orders : 0;
+      s.avgNetPerOrder  = s.avgGrossPayable + s.avgTDSPerOrder;
+      s.avgMarketingFee = s.orders > 0 ? s.totalMarketingFee / s.orders : 0;
+      s.avgCourierFee   = s.orders > 0 ? s.totalCourierFee   / s.orders : 0;
+      s.avgPaymentFee   = s.orders > 0 ? s.totalPaymentFee   / s.orders : 0;
+      s.avgIGST         = s.orders > 0 ? s.totalIGST         / s.orders : 0;
+      s.avgWebAds       = s.orders > 0 ? s.totalWebAds       / s.orders : 0;
+      s.avgCutPerOrder  = s.sp - s.avgGrossPayable;
+
+      // Return economics
+      const avgReturnReversal = s.returned > 0 ? s.totalReturnReversal / s.returned : s.avgGrossPayable;
+      s.returnLossPerUnit = avgReturnReversal + s.unitCOGS;
+      s.totalReturnLoss   = s.returned * s.returnLossPerUnit;
+
+      // Aliases
+      s.NET_PER_ORDER = s.avgNetPerOrder;
+      s.totalSnapNet  = s.netSellerPayable;
+      s.totalSnapCut  = s.orders * s.avgCutPerOrder;
     }
 
-    const skus = Object.values(skuStats);
-
     res.json({
-      skus,
+      skus: Object.values(skuStats),
       totalAdSpend,
       totalDelivered,
       detectedSKUs: Object.keys(skuMeta).map(k => ({
